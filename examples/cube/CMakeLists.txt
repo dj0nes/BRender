@@ -7,7 +7,7 @@ target_link_libraries(cube PRIVATE BRender::Full)
 set_property(TARGET cube PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../dat")
 set_property(TARGET cube PROPERTY FOLDER "BRender/Examples")
 
-set(CUBE_FILES cube.dat checkerboard.mat checkerboard.pix)
+set(CUBE_FILES cube.dat checkerboard.mat checkerboard.pix checkerboard24.mat checkerboard24.pix)
 
 foreach(file ${CUBE_FILES})
         configure_file(${CMAKE_CURRENT_SOURCE_DIR}/../dat/${file} ${CMAKE_CURRENT_BINARY_DIR}/${file} COPYONLY)

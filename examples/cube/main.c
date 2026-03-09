@@ -44,7 +44,9 @@ static void create_scene(br_pixelmap *screen, br_actor **_world, br_actor **_cam
 
     cube           = BrActorAdd(world, BrActorAllocate(BR_ACTOR_MODEL, NULL));
     cube->model    = BrModelFind("cube.dat");
-    cube->material = BrMaterialFind("checkerboard.mat");
+    cube->material = BrMaterialFind("checkerboard24.mat");
+    if(cube->material)
+        BrMaterialUpdate(cube->material, BR_MATU_COLOURMAP);
 
     *_world  = world;
     *_camera = camera;
