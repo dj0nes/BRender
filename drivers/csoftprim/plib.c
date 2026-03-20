@@ -1,0 +1,267 @@
+/*
+ * Copyright (c) 1993-1995 Argonaut Technologies Limited. All rights reserved.
+ *
+ * Primitive library methods
+ *
+ * csoftprim: no HostInfo, no MMX, no RasteriseBuffer
+ */
+#include <stddef.h>
+#include <string.h>
+
+#include "drv.h"
+
+#include "shortcut.h"
+#include "brassert.h"
+
+
+/*
+ * Default dispatch table for primitive library (defined at end of file)
+ */
+static const struct br_primitive_library_dispatch primitiveLibraryDispatch;
+
+/*
+ * 0 terminated list of tokens that are used to represent the state for
+ * this library
+ */
+const br_token PrimPartsTokens[] = {
+	BRT_PRIMITIVE,
+	BRT_OUTPUT,
+	0
+};
+
+/*
+ * Primitive library info. template
+ */
+#define F(f)	offsetof(br_primitive_library, f)
+#define P(f)	((br_uintptr_t)(&(f)))
+
+static struct br_tv_template_entry primitiveLibraryTemplateEntries[] = {
+	{BRT(IDENTIFIER_CSTR),	F(identifier),		BRTV_QUERY | BRTV_ALL,	BRTV_CONV_COPY, },
+	{BRT(PARTS_TL),			P(PrimPartsTokens),	BRTV_QUERY | BRTV_ALL | BRTV_ABS,	BRTV_CONV_LIST },
+	{BRT(PARTS_U32),		MASK_STATE_CACHE | MASK_STATE_OUTPUT | MASK_STATE_PRIMITIVE, BRTV_QUERY | BRTV_ABS,	BRTV_CONV_COPY },
+
+	/*
+	 * Useful 'Under the hood' hook
+	 */
+	{DEV(WORK_P),			P(work),           	BRTV_QUERY | BRTV_ABS,	BRTV_CONV_COPY, },
+};
+#undef F
+#undef P
+
+/*
+ * Set up a static device object
+ *
+ * csoftprim: no HostInfo call, processor_type = BRT_NONE, use_mmx = BR_FALSE
+ */
+struct br_primitive_library * PrimitiveLibrarySoftAllocate(struct br_device *dev, const char * identifier, const char *arguments)
+{
+	struct br_primitive_library * self;
+
+	/*
+	 * Generate some local tokens
+	 */
+	BrTokenCreate("PROCESSOR_T",		BRT_TOKEN);
+	BrTokenCreate("USE_MMX_B",			BRT_BOOLEAN);
+	BrTokenCreate("WORK_P",				BRT_POINTER);
+
+	self = BrResAllocate(NULL, sizeof(*self), BR_MEMORY_OBJECT);
+
+	self->dispatch = (struct br_primitive_library_dispatch *)&primitiveLibraryDispatch;
+	self->identifier = identifier;
+	self->device = dev;
+	self->colour_buffer = NULL ;
+
+	self->object_list = BrObjectListAllocate(dev);
+
+	ObjectContainerAddFront(dev, (br_object *)self);
+
+	/*
+	 * Pure C driver: no processor detection, no MMX
+	 */
+	self->processor_type = BRT_NONE;
+	self->use_mmx = BR_FALSE;
+
+	return self;
+}
+
+static void BR_CMETHOD_DECL(br_primitive_library_soft, free)(br_object *_self)
+{
+	br_primitive_library *self = (br_primitive_library*)_self;
+
+	/*
+	 * Remove attached objects
+	 */
+	BrObjectContainerFree((br_object_container *)self, BR_NULL_TOKEN, NULL, NULL);
+
+    BrResFreeNoCallback(self);
+}
+
+static br_token BR_CMETHOD_DECL(br_primitive_library_soft, type)(struct br_object *self)
+{
+	return BRT_PRIMITIVE_LIBRARY;
+}
+
+static br_boolean BR_CMETHOD_DECL(br_primitive_library_soft, isType)(br_object *self, br_token t)
+{
+	return (t == BRT_PRIMITIVE_LIBRARY) || (t == BRT_OBJECT_CONTAINER) || (t == BRT_OBJECT);
+}
+
+static br_size_t BR_CMETHOD_DECL(br_primitive_library_soft, space)(br_object *self)
+{
+	return sizeof(br_primitive_library);
+}
+
+static struct br_tv_template * BR_CMETHOD_DECL(br_primitive_library_soft,templateQuery)(br_object *_self)
+{
+    br_primitive_library *self = (br_primitive_library*)_self;
+
+    if(self->device->templates.primitiveLibraryTemplate == NULL)
+        self->device->templates.primitiveLibraryTemplate = BrTVTemplateAllocate(self->device,
+            (br_tv_template_entry *)primitiveLibraryTemplateEntries,
+			BR_ASIZE(primitiveLibraryTemplateEntries));
+
+    return self->device->templates.primitiveLibraryTemplate;
+}
+
+static void * BR_CMETHOD_DECL(br_primitive_library_soft,listQuery)(br_object_container *self)
+{
+	return ((br_primitive_library*)self)->object_list;
+}
+
+static br_error BR_CMETHOD_DECL(br_primitive_library_soft, stateNew)(
+		struct br_primitive_library *self,
+		struct br_primitive_state **rps)
+{
+	struct br_primitive_state *ps;
+
+	UASSERT(rps);
+
+	ps = PrimitiveStateSoftAllocate(self);
+
+	if(ps == NULL)
+		return BRE_FAIL;
+
+	*rps = ps;
+
+	return BRE_OK;
+}
+
+static br_error BR_CMETHOD_DECL(br_primitive_library_soft, bufferStoredNew)
+	(struct br_primitive_library *self, struct br_buffer_stored **psm,
+	br_token use, struct br_device_pixelmap *pm, br_token_value *tv)
+{
+	struct br_buffer_stored *sm;
+
+	UASSERT(psm);
+
+	sm = BufferStoredSoftAllocate(self, use, pm ,tv);
+
+	if(sm == NULL)
+		return BRE_FAIL;
+
+	*psm = sm;
+
+	return BRE_OK;
+}
+
+static br_error BR_CMETHOD_DECL(br_primitive_library_soft, bufferStoredAvail)(
+		struct br_primitive_library *self,
+		br_int_32 *space,
+		br_token use,
+		br_token_value *tv)
+{
+	return BRE_FAIL;
+}
+
+static br_error BR_CMETHOD_DECL(br_primitive_library_soft, flush)(
+		struct br_primitive_library *self,
+		br_boolean wait)
+{
+   ASSERT(self);
+
+   /*
+    * Unlock destination pixelmap, now rendering is complete.
+    */
+   if(self->colour_buffer){
+       DevicePixelmapDirectUnlock( self->colour_buffer );
+       self->colour_buffer = NULL ;
+   }
+
+   return BRE_OK;
+}
+
+static br_error BR_CMETHOD_DECL(br_primitive_library_soft, synchronise)(
+		struct br_primitive_library *self,
+		br_token sync_type,
+		br_boolean block)
+{
+	return BRE_OK;
+}
+
+static br_error BR_CMETHOD_DECL(br_primitive_library_soft, mask)(
+		struct br_primitive_library *self,
+		br_uint_32 *mask,
+		br_token *parts,
+		int n_parts)
+{
+	int i;
+	br_uint_32 m = 0;
+
+	for(i=0; i < n_parts; i++) {
+		switch(parts[i]) {
+		case BRT_PRIMITIVE:
+			m |= MASK_STATE_PRIMITIVE;
+			break;
+
+		case BRT_OUTPUT:
+			m |= MASK_STATE_OUTPUT;
+			break;
+		}
+	}
+
+	*mask = m;
+
+	return BRE_OK;
+}
+
+/*
+ * Default dispatch table for device
+ */
+static const struct br_primitive_library_dispatch primitiveLibraryDispatch = {
+    .__reserved0 = NULL,
+    .__reserved1 = NULL,
+    .__reserved2 = NULL,
+    .__reserved3 = NULL,
+    ._free       = BR_CMETHOD_REF(br_primitive_library_soft, free),
+    ._identifier = BR_CMETHOD_REF(br_object_softprim, identifier),
+    ._type       = BR_CMETHOD_REF(br_primitive_library_soft, type),
+    ._isType     = BR_CMETHOD_REF(br_primitive_library_soft, isType),
+    ._device     = BR_CMETHOD_REF(br_object_softprim, device),
+    ._space      = BR_CMETHOD_REF(br_primitive_library_soft, space),
+
+    ._templateQuery = BR_CMETHOD_REF(br_primitive_library_soft, templateQuery),
+    ._query         = BR_CMETHOD_REF(br_object, query),
+    ._queryBuffer   = BR_CMETHOD_REF(br_object, queryBuffer),
+    ._queryMany     = BR_CMETHOD_REF(br_object, queryMany),
+    ._queryManySize = BR_CMETHOD_REF(br_object, queryManySize),
+    ._queryAll      = BR_CMETHOD_REF(br_object, queryAll),
+    ._queryAllSize  = BR_CMETHOD_REF(br_object, queryAllSize),
+
+    ._listQuery        = BR_CMETHOD_REF(br_primitive_library_soft, listQuery),
+    ._tokensMatchBegin = BR_CMETHOD_REF(br_object_container, tokensMatchBegin),
+    ._tokensMatch      = BR_CMETHOD_REF(br_object_container, tokensMatch),
+    ._tokensMatchEnd   = BR_CMETHOD_REF(br_object_container, tokensMatchEnd),
+    ._addFront         = BR_CMETHOD_REF(br_object_container, addFront),
+    ._removeFront      = BR_CMETHOD_REF(br_object_container, removeFront),
+    ._remove           = BR_CMETHOD_REF(br_object_container, remove),
+    ._find             = BR_CMETHOD_REF(br_object_container, find),
+    ._findMany         = BR_CMETHOD_REF(br_object_container, findMany),
+    ._count            = BR_CMETHOD_REF(br_object_container, count),
+
+    ._stateNew          = BR_CMETHOD_REF(br_primitive_library_soft, stateNew),
+    ._bufferStoredNew   = BR_CMETHOD_REF(br_primitive_library_soft, bufferStoredNew),
+    ._bufferStoredAvail = BR_CMETHOD_REF(br_primitive_library_soft, bufferStoredAvail),
+    ._flush             = BR_CMETHOD_REF(br_primitive_library_soft, flush),
+    ._synchronise       = BR_CMETHOD_REF(br_primitive_library_soft, synchronise),
+    ._mask              = BR_CMETHOD_REF(br_primitive_library_soft, mask),
+};

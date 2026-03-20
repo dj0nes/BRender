@@ -3,7 +3,9 @@
 #include <brddi.h>
 #include <priminfo.h>
 #include <brsdl3dev.h>
+#include <fmt.h>
 #include <stdio.h>
+#include <string.h>
 #include <SDL3/SDL.h>
 #include <assert.h>
 
@@ -56,6 +58,13 @@ int main(int argc, char **argv)
     br_uint_64   ticks_last, ticks_now;
     br_colour    clear_colour, text_colour;
     br_error     err;
+    const char  *screenshot_path = NULL;
+    int          frame_count = 0;
+
+    for(int i = 1; i < argc; i++) {
+        if(strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc)
+            screenshot_path = argv[++i];
+    }
 
     BrBegin();
 
@@ -198,6 +207,13 @@ int main(int argc, char **argv)
         BrRendererFrameEnd();
 
         draw_info(colour_buffer, cube->material, text_colour);
+
+        frame_count++;
+        if(screenshot_path != NULL && frame_count == 10) {
+            BrFmtImageSave(screenshot_path, colour_buffer, BR_FMT_IMAGE_PNG);
+            BrLogInfo("APP", "Screenshot saved to %s", screenshot_path);
+            goto done;
+        }
 
         BrPixelmapDoubleBuffer(screen, colour_buffer);
     }
