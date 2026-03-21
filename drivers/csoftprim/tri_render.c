@@ -1,7 +1,7 @@
 /*
  * csoftprim triangle renderers
  *
- * Pure C Gouraud-shaded and flat-shaded triangle rasterizers
+ * Pure C flat, Gouraud, and textured triangle rasterizers
  * for RGB_888 with 16-bit Z-buffer.
  *
  * Translated from the pentprim tt24_piz.asm algorithm.
@@ -45,7 +45,7 @@ void BR_ASM_CALL TriangleRenderNull(brp_block *block, brp_vertex *v0, brp_vertex
 	br_int_32 _dp2 = c->comp - a->comp; \
 	param.grad_x = SafeFixedMac2Div(_dp1, work.main.y, -_dp2, work.top.y, g_divisor); \
 	param.grad_y = SafeFixedMac2Div(_dp2, work.top.x, -_dp1, work.main.x, g_divisor); \
-	param.current = a->comp + (g_divisor >= 0 ? param.grad_x / 2 : -param.grad_x / 2); \
+	param.current = a->comp + param.grad_x / 2; \
 	param.d_nocarry = BrFixedToInt(work.main.grad) * param.grad_x + param.grad_y; \
 	param.d_carry = param.d_nocarry + param.grad_x; \
 } while(0)
@@ -58,7 +58,7 @@ void BR_ASM_CALL TriangleRenderNull(brp_block *block, brp_vertex *v0, brp_vertex
 	br_int_32 _dp2 = c->comp - a->comp; \
 	param.grad_x = SafeFixedMac2Div(_dp1, work.main.y, -_dp2, work.top.y, g_divisor); \
 	param.grad_y = SafeFixedMac2Div(_dp2, work.top.x, -_dp1, work.main.x, g_divisor); \
-	param.current = (a->comp + (g_divisor >= 0 ? param.grad_x / 2 : -param.grad_x / 2)) ^ 0x80000000; \
+	param.current = (a->comp + param.grad_x / 2) ^ 0x80000000; \
 	param.d_nocarry = BrFixedToInt(work.main.grad) * param.grad_x + param.grad_y; \
 	param.d_carry = param.d_nocarry + param.grad_x; \
 } while(0)
@@ -96,8 +96,8 @@ static int triangle_setup(brp_vertex *v0, brp_vertex *v1, brp_vertex *v2,
 	work.bot.x  = sxc - sxb;
 	work.bot.y  = syc - syb;
 
-	/* 2x signed area (cross product of main and top edge) */
-	g_divisor = work.main.x * work.top.y - work.top.x * work.main.y;
+	/* 2x signed area (cross product of top and main edge) */
+	g_divisor = work.top.x * work.main.y - work.main.x * work.top.y;
 
 	if (g_divisor == 0)
 		return 1; /* Degenerate */
@@ -162,7 +162,7 @@ static void scanline_flat_zb(int y, int x_start, int x_end,
 
 	for (x = x_start; x < x_end; x++) {
 		unsigned short zval = (unsigned short)(z >> 16);
-		if (zline[x] > zval) {
+		if (zline[x] >= zval) {
 			zline[x] = zval;
 			cline[x * 3 + 0] = b_col;
 			cline[x * 3 + 1] = g;
@@ -202,7 +202,7 @@ static void scanline_smooth_zb(int y, int x_start, int x_end,
 
 	for (x = x_start; x < x_end; x++) {
 		unsigned short zval = (unsigned short)(z >> 16);
-		if (zline[x] > zval) {
+		if (zline[x] >= zval) {
 			zline[x] = zval;
 			/* Fixed-point truncation: >> 16 gives authentic Gouraud banding */
 			cline[x * 3 + 0] = (unsigned char)(b >> 16);
@@ -213,97 +213,6 @@ static void scanline_smooth_zb(int y, int x_start, int x_end,
 		r += dr;
 		g += dg;
 		b += db;
-	}
-}
-
-/*
- * Walk one half of the triangle (top or bottom trapezoid).
- *
- * major_edge walks the long edge; minor_edge walks the short edge.
- * g_divisor sign determines which is left vs right.
- */
-static void walk_trapezoid_flat(struct scan_edge *major, struct scan_edge *minor,
-                                int count, br_int_32 g_divisor,
-                                char *colour_base, br_int_32 colour_stride,
-                                char *depth_base, br_int_32 depth_stride,
-                                int r, int g, int b_col)
-{
-	int y, x_left, x_right;
-	br_uint_32 z_left;
-	int scanline;
-
-	for (scanline = 0; scanline < count; scanline++) {
-		y = major->start + scanline;
-
-		if (y < 0)
-			goto step;
-		if (y >= (int)work.colour.height)
-			break;
-
-		if (g_divisor >= 0) {
-			/* major is right edge, minor is left */
-			x_left = minor->i;
-			x_right = major->i;
-		} else {
-			/* major is left edge, minor is right */
-			x_left = major->i;
-			x_right = minor->i;
-		}
-
-		/* Clamp to screen */
-		if (x_left < 0) x_left = 0;
-		if (x_right > (int)work.colour.width_p) x_right = (int)work.colour.width_p;
-
-		/* Compute Z at left edge of scanline */
-		z_left = work.pz.current + work.pz.grad_x * x_left;
-
-		scanline_flat_zb(y, x_left, x_right,
-		                 z_left, work.pz.grad_x,
-		                 colour_base, colour_stride,
-		                 depth_base, depth_stride,
-		                 r, g, b_col);
-
-step:
-		/* Step major edge */
-		{
-			br_uint_32 new_f = major->f + major->d_f;
-			if (new_f < major->f) {
-				/* Carry */
-				major->i += major->d_i + 1;
-			} else {
-				major->i += major->d_i;
-			}
-			major->f = new_f;
-		}
-
-		/* Step minor edge */
-		{
-			br_uint_32 new_f = minor->f + minor->d_f;
-			if (new_f < minor->f) {
-				minor->i += minor->d_i + 1;
-			} else {
-				minor->i += minor->d_i;
-			}
-			minor->f = new_f;
-		}
-
-		/* Step Z along Y */
-		{
-			br_uint_32 new_f = major->f; /* just stepped */
-			/* Use carry/nocarry from the major edge step */
-			/* Actually, the parameter stepping uses the main edge carry */
-		}
-		/* Step parameters: check if major edge carried this scanline */
-		{
-			/* We already stepped the major edge. The carry was from the fractional add.
-			 * For parameter stepping, we use d_carry if carry occurred, d_nocarry otherwise.
-			 * But we need to detect whether the main edge (which is always the long edge)
-			 * carried. Let me re-think this.
-			 *
-			 * In BRender's scan converter, parameters step along the main (long) edge.
-			 * The carry/nocarry distinction is about the main edge's fractional X accumulator.
-			 */
-		}
 	}
 }
 
@@ -366,18 +275,18 @@ void BR_ASM_CALL TriangleRenderFlat_RGB_888_ZB(brp_block *block, brp_vertex *v0,
 
 			if (y >= 0 && y < (int)work.colour.height) {
 				if (g_divisor >= 0) {
-					x_left = minor_x_i;
-					x_right = main_x_i;
-				} else {
 					x_left = main_x_i;
 					x_right = minor_x_i;
+				} else {
+					x_left = minor_x_i;
+					x_right = main_x_i;
 				}
 
 				if (x_left < 0) x_left = 0;
 				if (x_right > (int)work.colour.width_p) x_right = (int)work.colour.width_p;
 
 				if (x_left < x_right) {
-					br_uint_32 z_scan = z_current + work.pz.grad_x * x_left;
+					br_uint_32 z_scan = z_current + work.pz.grad_x * (x_left - main_x_i);
 					scanline_flat_zb(y, x_left, x_right,
 					                 z_scan, work.pz.grad_x,
 					                 colour_base, colour_stride,
@@ -422,18 +331,18 @@ void BR_ASM_CALL TriangleRenderFlat_RGB_888_ZB(brp_block *block, brp_vertex *v0,
 
 			if (y >= 0 && y < (int)work.colour.height) {
 				if (g_divisor >= 0) {
-					x_left = minor_x_i;
-					x_right = main_x_i;
-				} else {
 					x_left = main_x_i;
 					x_right = minor_x_i;
+				} else {
+					x_left = minor_x_i;
+					x_right = main_x_i;
 				}
 
 				if (x_left < 0) x_left = 0;
 				if (x_right > (int)work.colour.width_p) x_right = (int)work.colour.width_p;
 
 				if (x_left < x_right) {
-					br_uint_32 z_scan = z_current + work.pz.grad_x * x_left;
+					br_uint_32 z_scan = z_current + work.pz.grad_x * (x_left - main_x_i);
 					scanline_flat_zb(y, x_left, x_right,
 					                 z_scan, work.pz.grad_x,
 					                 colour_base, colour_stride,
@@ -522,21 +431,21 @@ void BR_ASM_CALL TriangleRenderSmooth_RGB_888_ZB(brp_block *block, brp_vertex *v
 
 			if (y >= 0 && y < (int)work.colour.height) {
 				if (g_divisor >= 0) {
-					x_left = minor_x_i;
-					x_right = main_x_i;
-				} else {
 					x_left = main_x_i;
 					x_right = minor_x_i;
+				} else {
+					x_left = minor_x_i;
+					x_right = main_x_i;
 				}
 
 				if (x_left < 0) x_left = 0;
 				if (x_right > (int)work.colour.width_p) x_right = (int)work.colour.width_p;
 
 				if (x_left < x_right) {
-					br_uint_32 z_scan = z_current + work.pz.grad_x * x_left;
-					br_int_32 r_scan = r_current + work.pr.grad_x * x_left;
-					br_int_32 g_scan = g_current + work.pg.grad_x * x_left;
-					br_int_32 b_scan = b_current + work.pb.grad_x * x_left;
+					br_uint_32 z_scan = z_current + work.pz.grad_x * (x_left - main_x_i);
+					br_int_32 r_scan = r_current + work.pr.grad_x * (x_left - main_x_i);
+					br_int_32 g_scan = g_current + work.pg.grad_x * (x_left - main_x_i);
+					br_int_32 b_scan = b_current + work.pb.grad_x * (x_left - main_x_i);
 
 					scanline_smooth_zb(y, x_left, x_right,
 					                   z_scan, work.pz.grad_x,
@@ -590,21 +499,21 @@ void BR_ASM_CALL TriangleRenderSmooth_RGB_888_ZB(brp_block *block, brp_vertex *v
 
 			if (y >= 0 && y < (int)work.colour.height) {
 				if (g_divisor >= 0) {
-					x_left = minor_x_i;
-					x_right = main_x_i;
-				} else {
 					x_left = main_x_i;
 					x_right = minor_x_i;
+				} else {
+					x_left = minor_x_i;
+					x_right = main_x_i;
 				}
 
 				if (x_left < 0) x_left = 0;
 				if (x_right > (int)work.colour.width_p) x_right = (int)work.colour.width_p;
 
 				if (x_left < x_right) {
-					br_uint_32 z_scan = z_current + work.pz.grad_x * x_left;
-					br_int_32 r_scan = r_current + work.pr.grad_x * x_left;
-					br_int_32 g_scan = g_current + work.pg.grad_x * x_left;
-					br_int_32 b_scan = b_current + work.pb.grad_x * x_left;
+					br_uint_32 z_scan = z_current + work.pz.grad_x * (x_left - main_x_i);
+					br_int_32 r_scan = r_current + work.pr.grad_x * (x_left - main_x_i);
+					br_int_32 g_scan = g_current + work.pg.grad_x * (x_left - main_x_i);
+					br_int_32 b_scan = b_current + work.pb.grad_x * (x_left - main_x_i);
 
 					scanline_smooth_zb(y, x_left, x_right,
 					                   z_scan, work.pz.grad_x,
@@ -647,4 +556,277 @@ void BR_ASM_CALL TriangleRenderSmooth_RGB_888_ZB(brp_block *block, brp_vertex *v
 			}
 		}
 	}
+}
+
+/*
+ * Inner scanline for textured RGB_888 + Z16 (no lighting modulation)
+ */
+static void scanline_textured_zb(int y, int x_start, int x_end,
+                                  br_uint_32 z_start, br_int_32 dz,
+                                  br_int_32 u_start, br_int_32 du,
+                                  br_int_32 v_start, br_int_32 dv,
+                                  char *colour_base, br_int_32 colour_stride,
+                                  char *depth_base, br_int_32 depth_stride,
+                                  char *tex_base, br_int_32 tex_stride,
+                                  int tex_width, int tex_height)
+{
+	char *cline = colour_base + y * colour_stride;
+	unsigned short *zline = (unsigned short *)(depth_base + y * depth_stride);
+	br_uint_32 z = z_start;
+	br_int_32 u = u_start, v = v_start;
+	int x;
+
+	for (x = x_start; x < x_end; x++) {
+		unsigned short zval = (unsigned short)(z >> 16);
+		if (zline[x] >= zval) {
+			int tu = (u >> 16) % tex_width;
+			int tv = (v >> 16) % tex_height;
+			char *texel;
+			if (tu < 0) tu += tex_width;
+			if (tv < 0) tv += tex_height;
+			texel = tex_base + tv * tex_stride + tu * 3;
+			if (texel[0] | texel[1] | texel[2]) {
+				zline[x] = zval;
+				cline[x * 3 + 0] = texel[0];
+				cline[x * 3 + 1] = texel[1];
+				cline[x * 3 + 2] = texel[2];
+			}
+		}
+		z += dz; u += du; v += dv;
+	}
+}
+
+/*
+ * Inner scanline for textured + Gouraud-lit RGB_888 + Z16
+ * out = (texel * vertex_color) >> 8
+ */
+static void scanline_textured_smooth_zb(int y, int x_start, int x_end,
+                                         br_uint_32 z_start, br_int_32 dz,
+                                         br_int_32 u_start, br_int_32 du,
+                                         br_int_32 v_start, br_int_32 dv,
+                                         br_int_32 r_start, br_int_32 dr,
+                                         br_int_32 g_start, br_int_32 dg,
+                                         br_int_32 b_start, br_int_32 db,
+                                         char *colour_base, br_int_32 colour_stride,
+                                         char *depth_base, br_int_32 depth_stride,
+                                         char *tex_base, br_int_32 tex_stride,
+                                         int tex_width, int tex_height)
+{
+	char *cline = colour_base + y * colour_stride;
+	unsigned short *zline = (unsigned short *)(depth_base + y * depth_stride);
+	br_uint_32 z = z_start;
+	br_int_32 u = u_start, v = v_start;
+	br_int_32 r = r_start, g = g_start, b = b_start;
+	int x;
+
+	for (x = x_start; x < x_end; x++) {
+		unsigned short zval = (unsigned short)(z >> 16);
+		if (zline[x] >= zval) {
+			int tu = (u >> 16) % tex_width;
+			int tv = (v >> 16) % tex_height;
+			unsigned char *texel;
+			if (tu < 0) tu += tex_width;
+			if (tv < 0) tv += tex_height;
+			texel = (unsigned char *)(tex_base + tv * tex_stride + tu * 3);
+			if (texel[0] | texel[1] | texel[2]) {
+				int vr = (r >> 16) & 0xFF, vg = (g >> 16) & 0xFF, vb = (b >> 16) & 0xFF;
+				zline[x] = zval;
+				cline[x * 3 + 0] = (unsigned char)((texel[0] * vb) >> 8);
+				cline[x * 3 + 1] = (unsigned char)((texel[1] * vg) >> 8);
+				cline[x * 3 + 2] = (unsigned char)((texel[2] * vr) >> 8);
+			}
+		}
+		z += dz; u += du; v += dv;
+		r += dr; g += dg; b += db;
+	}
+}
+
+/*
+ * Textured triangle: RGB_888 + Z16 (no per-vertex lighting)
+ */
+void BR_ASM_CALL TriangleRenderTextured_RGB_888_ZB(brp_block *block, brp_vertex *v0, brp_vertex *v1, brp_vertex *v2)
+{
+	brp_vertex *a, *b, *c;
+	br_int_32 g_divisor;
+	char *colour_base, *depth_base, *tex_base;
+	br_int_32 colour_stride, depth_stride, tex_stride;
+	int tex_width, tex_height, y, scanline, main_x_i, main_x_f, x_left, x_right;
+	br_int_32 z_current, u_current, v_current;
+
+	(void)block;
+	if (triangle_setup(v0, v1, v2, &a, &b, &c, &g_divisor)) return;
+
+	PARAM_SETUP_UNSIGNED(work.pz, comp_x[C_SZ]);
+	PARAM_SETUP(work.pu, comp_x[C_U]);
+	PARAM_SETUP(work.pv, comp_x[C_V]);
+
+	colour_base = (char *)work.colour.base; depth_base = (char *)work.depth.base;
+	colour_stride = work.colour.stride_b;   depth_stride = work.depth.stride_b;
+	tex_base = (char *)work.texture.base;    tex_stride = work.texture.stride_b;
+	tex_width = (int)work.texture.width_p;   tex_height = (int)work.texture.height;
+	if (tex_width <= 0 || tex_height <= 0) return;
+
+	main_x_i = a->comp_x[C_SX] >> 16; main_x_f = 0x80000000;
+	z_current = work.pz.current; u_current = work.pu.current; v_current = work.pv.current;
+
+#define TEX_STEP_MAIN(carry_label) \
+	{ br_uint_32 nf = (br_uint_32)main_x_f + (br_uint_32)work.main.d_f; \
+	  if (nf < (br_uint_32)main_x_f) { \
+		main_x_i += work.main.d_i + 1; \
+		z_current += work.pz.d_carry; u_current += work.pu.d_carry; v_current += work.pv.d_carry; \
+	  } else { \
+		main_x_i += work.main.d_i; \
+		z_current += work.pz.d_nocarry; u_current += work.pu.d_nocarry; v_current += work.pv.d_nocarry; \
+	  } main_x_f = nf; }
+
+	/* Top half */
+	{
+		int minor_x_i = a->comp_x[C_SX] >> 16, minor_x_f = 0x80000000;
+		for (scanline = 0; scanline < work.top.count; scanline++) {
+			y = (a->comp_x[C_SY] >> 16) + scanline;
+			if (y >= 0 && y < (int)work.colour.height) {
+				x_left  = (g_divisor >= 0) ? main_x_i  : minor_x_i;
+				x_right = (g_divisor >= 0) ? minor_x_i : main_x_i;
+				if (x_left < 0) x_left = 0;
+				if (x_right > (int)work.colour.width_p) x_right = (int)work.colour.width_p;
+				if (x_left < x_right)
+					scanline_textured_zb(y, x_left, x_right,
+						z_current + work.pz.grad_x * (x_left - main_x_i), work.pz.grad_x,
+						u_current + work.pu.grad_x * (x_left - main_x_i), work.pu.grad_x,
+						v_current + work.pv.grad_x * (x_left - main_x_i), work.pv.grad_x,
+						colour_base, colour_stride, depth_base, depth_stride,
+						tex_base, tex_stride, tex_width, tex_height);
+			}
+			TEX_STEP_MAIN(top)
+			{ br_uint_32 nf = (br_uint_32)minor_x_f + (br_uint_32)work.top.d_f;
+			  minor_x_i += (nf < (br_uint_32)minor_x_f) ? work.top.d_i + 1 : work.top.d_i;
+			  minor_x_f = nf; }
+		}
+	}
+	/* Bottom half */
+	{
+		int minor_x_i = b->comp_x[C_SX] >> 16, minor_x_f = 0x80000000;
+		for (scanline = 0; scanline < work.bot.count; scanline++) {
+			y = (b->comp_x[C_SY] >> 16) + scanline;
+			if (y >= 0 && y < (int)work.colour.height) {
+				x_left  = (g_divisor >= 0) ? main_x_i  : minor_x_i;
+				x_right = (g_divisor >= 0) ? minor_x_i : main_x_i;
+				if (x_left < 0) x_left = 0;
+				if (x_right > (int)work.colour.width_p) x_right = (int)work.colour.width_p;
+				if (x_left < x_right)
+					scanline_textured_zb(y, x_left, x_right,
+						z_current + work.pz.grad_x * (x_left - main_x_i), work.pz.grad_x,
+						u_current + work.pu.grad_x * (x_left - main_x_i), work.pu.grad_x,
+						v_current + work.pv.grad_x * (x_left - main_x_i), work.pv.grad_x,
+						colour_base, colour_stride, depth_base, depth_stride,
+						tex_base, tex_stride, tex_width, tex_height);
+			}
+			TEX_STEP_MAIN(bot)
+			{ br_uint_32 nf = (br_uint_32)minor_x_f + (br_uint_32)work.bot.d_f;
+			  minor_x_i += (nf < (br_uint_32)minor_x_f) ? work.bot.d_i + 1 : work.bot.d_i;
+			  minor_x_f = nf; }
+		}
+	}
+#undef TEX_STEP_MAIN
+}
+
+/*
+ * Textured + Gouraud-lit triangle: RGB_888 + Z16
+ */
+void BR_ASM_CALL TriangleRenderTexturedSmooth_RGB_888_ZB(brp_block *block, brp_vertex *v0, brp_vertex *v1, brp_vertex *v2)
+{
+	brp_vertex *a, *b, *c;
+	br_int_32 g_divisor;
+	char *colour_base, *depth_base, *tex_base;
+	br_int_32 colour_stride, depth_stride, tex_stride;
+	int tex_width, tex_height, y, scanline, main_x_i, main_x_f, x_left, x_right;
+	br_int_32 z_current, u_current, v_current, r_current, g_current, b_current;
+
+	(void)block;
+	if (triangle_setup(v0, v1, v2, &a, &b, &c, &g_divisor)) return;
+
+	PARAM_SETUP_UNSIGNED(work.pz, comp_x[C_SZ]);
+	PARAM_SETUP(work.pu, comp_x[C_U]);
+	PARAM_SETUP(work.pv, comp_x[C_V]);
+	PARAM_SETUP(work.pr, comp_x[C_R]);
+	PARAM_SETUP(work.pg, comp_x[C_G]);
+	PARAM_SETUP(work.pb, comp_x[C_B]);
+
+	colour_base = (char *)work.colour.base; depth_base = (char *)work.depth.base;
+	colour_stride = work.colour.stride_b;   depth_stride = work.depth.stride_b;
+	tex_base = (char *)work.texture.base;    tex_stride = work.texture.stride_b;
+	tex_width = (int)work.texture.width_p;   tex_height = (int)work.texture.height;
+	if (tex_width <= 0 || tex_height <= 0) return;
+
+	main_x_i = a->comp_x[C_SX] >> 16; main_x_f = 0x80000000;
+	z_current = work.pz.current; u_current = work.pu.current; v_current = work.pv.current;
+	r_current = work.pr.current; g_current = work.pg.current; b_current = work.pb.current;
+
+#define TEXLIT_STEP_MAIN \
+	{ br_uint_32 nf = (br_uint_32)main_x_f + (br_uint_32)work.main.d_f; \
+	  if (nf < (br_uint_32)main_x_f) { \
+		main_x_i += work.main.d_i + 1; \
+		z_current += work.pz.d_carry; u_current += work.pu.d_carry; v_current += work.pv.d_carry; \
+		r_current += work.pr.d_carry; g_current += work.pg.d_carry; b_current += work.pb.d_carry; \
+	  } else { \
+		main_x_i += work.main.d_i; \
+		z_current += work.pz.d_nocarry; u_current += work.pu.d_nocarry; v_current += work.pv.d_nocarry; \
+		r_current += work.pr.d_nocarry; g_current += work.pg.d_nocarry; b_current += work.pb.d_nocarry; \
+	  } main_x_f = nf; }
+
+	/* Top half */
+	{
+		int minor_x_i = a->comp_x[C_SX] >> 16, minor_x_f = 0x80000000;
+		for (scanline = 0; scanline < work.top.count; scanline++) {
+			y = (a->comp_x[C_SY] >> 16) + scanline;
+			if (y >= 0 && y < (int)work.colour.height) {
+				x_left  = (g_divisor >= 0) ? main_x_i  : minor_x_i;
+				x_right = (g_divisor >= 0) ? minor_x_i : main_x_i;
+				if (x_left < 0) x_left = 0;
+				if (x_right > (int)work.colour.width_p) x_right = (int)work.colour.width_p;
+				if (x_left < x_right)
+					scanline_textured_smooth_zb(y, x_left, x_right,
+						z_current + work.pz.grad_x * (x_left - main_x_i), work.pz.grad_x,
+						u_current + work.pu.grad_x * (x_left - main_x_i), work.pu.grad_x,
+						v_current + work.pv.grad_x * (x_left - main_x_i), work.pv.grad_x,
+						r_current + work.pr.grad_x * (x_left - main_x_i), work.pr.grad_x,
+						g_current + work.pg.grad_x * (x_left - main_x_i), work.pg.grad_x,
+						b_current + work.pb.grad_x * (x_left - main_x_i), work.pb.grad_x,
+						colour_base, colour_stride, depth_base, depth_stride,
+						tex_base, tex_stride, tex_width, tex_height);
+			}
+			TEXLIT_STEP_MAIN
+			{ br_uint_32 nf = (br_uint_32)minor_x_f + (br_uint_32)work.top.d_f;
+			  minor_x_i += (nf < (br_uint_32)minor_x_f) ? work.top.d_i + 1 : work.top.d_i;
+			  minor_x_f = nf; }
+		}
+	}
+	/* Bottom half */
+	{
+		int minor_x_i = b->comp_x[C_SX] >> 16, minor_x_f = 0x80000000;
+		for (scanline = 0; scanline < work.bot.count; scanline++) {
+			y = (b->comp_x[C_SY] >> 16) + scanline;
+			if (y >= 0 && y < (int)work.colour.height) {
+				x_left  = (g_divisor >= 0) ? main_x_i  : minor_x_i;
+				x_right = (g_divisor >= 0) ? minor_x_i : main_x_i;
+				if (x_left < 0) x_left = 0;
+				if (x_right > (int)work.colour.width_p) x_right = (int)work.colour.width_p;
+				if (x_left < x_right)
+					scanline_textured_smooth_zb(y, x_left, x_right,
+						z_current + work.pz.grad_x * (x_left - main_x_i), work.pz.grad_x,
+						u_current + work.pu.grad_x * (x_left - main_x_i), work.pu.grad_x,
+						v_current + work.pv.grad_x * (x_left - main_x_i), work.pv.grad_x,
+						r_current + work.pr.grad_x * (x_left - main_x_i), work.pr.grad_x,
+						g_current + work.pg.grad_x * (x_left - main_x_i), work.pg.grad_x,
+						b_current + work.pb.grad_x * (x_left - main_x_i), work.pb.grad_x,
+						colour_base, colour_stride, depth_base, depth_stride,
+						tex_base, tex_stride, tex_width, tex_height);
+			}
+			TEXLIT_STEP_MAIN
+			{ br_uint_32 nf = (br_uint_32)minor_x_f + (br_uint_32)work.bot.d_f;
+			  minor_x_i += (nf < (br_uint_32)minor_x_f) ? work.bot.d_i + 1 : work.bot.d_i;
+			  minor_x_f = nf; }
+		}
+	}
+#undef TEXLIT_STEP_MAIN
 }
