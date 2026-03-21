@@ -82,14 +82,14 @@ static br_pixelmap *load_texture(cgltf_image *image) {
         return NULL;
     }
 
-    /* Convert RGBA8888 to RGB888 */
+    /* Convert RGBA8888 to BGR888 (BRender's BR_PMT_RGB_888 is BGR byte order) */
     for (y = 0; y < h; y++) {
         unsigned char *dst = (unsigned char *)((char *)pm->pixels + y * pm->row_bytes);
         unsigned char *src = pixels + y * w * 4;
         for (x = 0; x < w; x++) {
-            dst[x*3 + 0] = src[x*4 + 0];
-            dst[x*3 + 1] = src[x*4 + 1];
-            dst[x*3 + 2] = src[x*4 + 2];
+            dst[x*3 + 0] = src[x*4 + 2]; /* B */
+            dst[x*3 + 1] = src[x*4 + 1]; /* G */
+            dst[x*3 + 2] = src[x*4 + 0]; /* R */
         }
     }
 
