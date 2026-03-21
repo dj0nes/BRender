@@ -64,6 +64,15 @@ static br_scalar  g_scene_radius;
 static float g_anim_time  = -1.0f;
 static float g_anim_speed = 0.17f;
 
+/* VSync (default: on) */
+static int g_vsync = 1;
+
+/* Brightness (material ambient ka) */
+static float g_brightness = 0.30f;
+
+/* Timeout (seconds, 0 = disabled) */
+static float g_timeout = 0.0f;
+
 /* FPS tracking */
 static float    g_fps        = 0.0f;
 static int      g_fps_frames = 0;
@@ -166,16 +175,45 @@ static int setup_scene(const char *glb_path)
     if(cam_data->hither_z < 0.01f)
         cam_data->hither_z = 0.01f;
 
-    /* Light */
+    /* Directional light */
     light         = BrActorAdd(g_world, BrActorAllocate(BR_ACTOR_LIGHT, NULL));
+    {
+        br_light *ld  = (br_light *)light->type_data;
+        ld->type      = BR_LIGHT_DIRECT;
+        ld->colour    = BR_COLOUR_RGB(255, 255, 255);
+        ld->attenuation_c = BR_SCALAR(1.0);
+    }
     light->t.type = BR_TRANSFORM_MATRIX34;
     BrMatrix34Identity(&light->t.t.mat);
     BrLightEnable(light);
+
+    /* Ambient light (fills in faces not reached by the directional light) */
+    {
+        br_actor *ambient = BrActorAdd(g_world, BrActorAllocate(BR_ACTOR_LIGHT, NULL));
+        br_light *la      = (br_light *)ambient->type_data;
+        la->type          = BR_LIGHT_AMBIENT;
+        la->colour        = BR_COLOUR_RGB(255, 255, 255);
+        BrLightEnable(ambient);
+    }
 
     /* Attach the glTF actor tree */
     g_scene_root = BrActorAdd(g_world, g_gltf_scene.root_actor);
 
     return 1;
+}
+
+/* ------------------------------------------------------------------ */
+/* Brightness                                                          */
+/* ------------------------------------------------------------------ */
+
+static void apply_brightness(void)
+{
+    for(int i = 0; i < g_gltf_scene.nmaterials; i++) {
+        br_material *mat = g_gltf_scene.materials[i];
+        mat->ka = BR_UFRACTION(g_brightness);
+        BrMaterialUpdate(mat, BR_MATU_ALL);
+    }
+    LOGF("brightness: ka=%.2f", (double)g_brightness);
 }
 
 /* ------------------------------------------------------------------ */
@@ -200,12 +238,20 @@ int main(int argc, char **argv)
             max_frames = atoi(argv[++i]);
         else if(strcmp(argv[i], "--animspeed") == 0 && i + 1 < argc)
             g_anim_speed = (float)atof(argv[++i]);
+        else if(strcmp(argv[i], "--no-vsync") == 0)
+            g_vsync = 0;
+        else if(strcmp(argv[i], "--brightness") == 0 && i + 1 < argc)
+            g_brightness = (float)atof(argv[++i]);
+        else if(strcmp(argv[i], "--timeout") == 0 && i + 1 < argc)
+            g_timeout = (float)atof(argv[++i]);
         else if(argv[i][0] != '-')
             model_path = argv[i];
     }
 
     if(!model_path) {
-        printf("Usage: gltfview [--animspeed F] [--screenshot path] [--frames N] <model.glb|model.gltf>\n");
+        printf("Usage: gltfview [--no-vsync] [--brightness F] [--timeout S]\n"
+               "                [--animspeed F] [--screenshot path] [--frames N]\n"
+               "                <model.glb|model.gltf>\n");
         return 1;
     }
 
@@ -249,6 +295,8 @@ int main(int argc, char **argv)
     LOGF("depth:  %dx%d type=%d", g_depth_buf->width, g_depth_buf->height, g_depth_buf->type);
 
     window = BrSDL3UtilGetWindow(g_screen);
+    SDL_SetWindowSurfaceVSync(window, g_vsync);
+    LOGF("vsync: %s", g_vsync ? "on" : "off");
 
     BrRendererBegin(g_colour_buf, NULL, NULL, primitive_heap, sizeof(primitive_heap));
 
@@ -261,6 +309,8 @@ int main(int argc, char **argv)
         BrEnd();
         return 1;
     }
+
+    apply_brightness();
 
     LOGF("anim_speed=%.4f, anim_duration=%.3fs", (double)g_anim_speed, (double)g_gltf_scene.anim.duration);
     LOG("scene ready, entering render loop");
@@ -364,6 +414,23 @@ int main(int argc, char **argv)
                             g_anim_speed = 1.0f;
                             LOGF("anim speed: %.2fx (reset)", (double)g_anim_speed);
                             break;
+                        case SDL_SCANCODE_V:
+                            g_vsync ^= 1;
+                            SDL_SetWindowSurfaceVSync(window, g_vsync);
+                            LOGF("vsync: %s", g_vsync ? "on" : "off");
+                            break;
+                        case SDL_SCANCODE_B:
+                            g_brightness += 0.05f;
+                            if(g_brightness > 1.0f)
+                                g_brightness = 1.0f;
+                            apply_brightness();
+                            break;
+                        case SDL_SCANCODE_N:
+                            g_brightness -= 0.05f;
+                            if(g_brightness < 0.0f)
+                                g_brightness = 0.0f;
+                            apply_brightness();
+                            break;
                         default:
                             break;
                     }
@@ -397,8 +464,11 @@ int main(int argc, char **argv)
             snprintf(hud_buf, sizeof(hud_buf), "FPS: %.1f  Anim: %.2fx", (double)g_fps, (double)g_anim_speed);
             BrPixelmapText(g_colour_buf, x0, y0, BR_COLOUR_RGB(255, 255, 0), BrFontProp7x9, hud_buf);
             y0 += lh + 2;
+            snprintf(hud_buf, sizeof(hud_buf), "ka=%.2f  VSync:%s", (double)g_brightness, g_vsync ? "on" : "off");
+            BrPixelmapText(g_colour_buf, x0, y0, BR_COLOUR_RGB(200, 200, 200), BrFontProp7x9, hud_buf);
+            y0 += lh + 2;
             BrPixelmapText(g_colour_buf, x0, y0, BR_COLOUR_RGB(255, 255, 255), BrFontProp7x9,
-                           "SPACE:Pause  Arrows:Orbit  1/0:Zoom  +/-:Speed  Q:Quit");
+                           "SPACE:Pause  Arrows:Orbit  1/0:Zoom  +/-:Speed  V:VSync  B/N:Bright  Q:Quit");
         }
 
         BrPixelmapDoubleBuffer(g_screen, g_colour_buf);
@@ -460,6 +530,15 @@ int main(int argc, char **argv)
 
         if(max_frames > 0 && frame_count >= max_frames)
             goto done;
+
+        if(g_timeout > 0.0f) {
+            static float elapsed_total = 0.0f;
+            elapsed_total += dt;
+            if(elapsed_total >= g_timeout) {
+                LOGF("timeout reached (%.1fs)", (double)g_timeout);
+                goto done;
+            }
+        }
     }
 
 done:

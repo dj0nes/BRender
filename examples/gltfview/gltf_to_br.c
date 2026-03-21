@@ -58,22 +58,36 @@ static void set_base_dir(const char *gltf_path) {
 
 static br_pixelmap *load_texture(cgltf_image *image) {
     br_pixelmap *pm;
-    unsigned char *pixels;
+    unsigned char *pixels = NULL;
     int w, h, channels, x, y;
     char path[520];
 
-    if (!image || !image->uri) return NULL;
+    if (!image) return NULL;
 
-    /* Build full path from base dir + URI */
-    snprintf(path, sizeof(path), "%s%s", g_base_dir, image->uri);
+    if (image->buffer_view) {
+        /* Embedded texture (common in .glb files) */
+        const unsigned char *buf = cgltf_buffer_view_data(image->buffer_view);
+        cgltf_size buf_size = image->buffer_view->size;
+        if (!buf || buf_size == 0) return NULL;
 
-    pixels = stbi_load(path, &w, &h, &channels, 4); /* force RGBA */
-    if (!pixels) {
-        LOGF("texture load failed: %s", path);
+        pixels = stbi_load_from_memory(buf, (int)buf_size, &w, &h, &channels, 4);
+        if (!pixels) {
+            LOG("embedded texture decode failed");
+            return NULL;
+        }
+        LOGF("texture loaded: embedded (%dx%d)", w, h);
+    } else if (image->uri) {
+        /* External file reference */
+        snprintf(path, sizeof(path), "%s%s", g_base_dir, image->uri);
+        pixels = stbi_load(path, &w, &h, &channels, 4);
+        if (!pixels) {
+            LOGF("texture load failed: %s", path);
+            return NULL;
+        }
+        LOGF("texture loaded: %s (%dx%d)", image->uri, w, h);
+    } else {
         return NULL;
     }
-
-    LOGF("texture loaded: %s (%dx%d)", image->uri, w, h);
 
     /* Create RGB_888 pixelmap (BlazingRenderer GL path prefers 24-bit) */
     pm = BrPixelmapAllocate(BR_PMT_RGB_888, w, h, NULL, 0);
@@ -87,9 +101,14 @@ static br_pixelmap *load_texture(cgltf_image *image) {
         unsigned char *dst = (unsigned char *)((char *)pm->pixels + y * pm->row_bytes);
         unsigned char *src = pixels + y * w * 4;
         for (x = 0; x < w; x++) {
-            dst[x*3 + 0] = src[x*4 + 2]; /* B */
-            dst[x*3 + 1] = src[x*4 + 1]; /* G */
-            dst[x*3 + 2] = src[x*4 + 0]; /* R */
+            if (src[x*4 + 3] == 0) {
+                /* Fully transparent: write color key (0,0,0) */
+                dst[x*3 + 0] = dst[x*3 + 1] = dst[x*3 + 2] = 0;
+            } else {
+                dst[x*3 + 0] = src[x*4 + 2]; /* B */
+                dst[x*3 + 1] = src[x*4 + 1]; /* G */
+                dst[x*3 + 2] = src[x*4 + 0]; /* R */
+            }
         }
     }
 
@@ -122,15 +141,13 @@ static br_material *convert_material(cgltf_material *gmat, cgltf_data *data) {
     mat->colour = BR_COLOUR_RGB(r, g, b);
 
     /* Lighting coefficients */
-    mat->ka = BR_UFRACTION(0.10);
+    mat->ka = BR_UFRACTION(0.30);
     mat->kd = BR_UFRACTION(0.70);
     roughness = gmat->pbr_metallic_roughness.roughness_factor;
     mat->ks = BR_UFRACTION(1.0f - roughness);
     mat->power = BR_SCALAR(20.0);
 
-    mat->flags = BR_MATF_LIGHT | BR_MATF_SMOOTH;
-    if (gmat->double_sided)
-        mat->flags |= BR_MATF_TWO_SIDED;
+    mat->flags = BR_MATF_LIGHT | BR_MATF_SMOOTH | BR_MATF_TWO_SIDED;
 
     /* Load base color texture if present */
     if (gmat->pbr_metallic_roughness.base_color_texture.texture) {
@@ -160,11 +177,11 @@ static br_material *get_default_material(void) {
     if (!def) {
         def = BrMaterialAllocate("gltf_default");
         def->colour = BR_COLOUR_RGB(200, 200, 200);
-        def->ka = BR_UFRACTION(0.10);
+        def->ka = BR_UFRACTION(0.30);
         def->kd = BR_UFRACTION(0.70);
         def->ks = BR_UFRACTION(0.30);
         def->power = BR_SCALAR(20.0);
-        def->flags = BR_MATF_LIGHT | BR_MATF_SMOOTH;
+        def->flags = BR_MATF_LIGHT | BR_MATF_SMOOTH | BR_MATF_TWO_SIDED;
         BrMatrix23Identity(&def->map_transform);
         BrMaterialUpdate(def, BR_MATU_ALL);
         BrMaterialAdd(def);
