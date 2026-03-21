@@ -250,31 +250,33 @@ typedef struct brp_block_min {
  *   brp_render4      block + 4 vertices                                       (quad)
  */
 #ifndef __H2INC__
+typedef void (BR_ASM_CALL *brp_render1_fn)(brp_block *, brp_vertex *);
+typedef void (BR_ASM_CALL *brp_render2_fn)(brp_block *, brp_vertex *, brp_vertex *);
+typedef void (BR_ASM_CALL *brp_render3_fn)(brp_block *, brp_vertex *, brp_vertex *, brp_vertex *);
+typedef void (BR_ASM_CALL *brp_render3_fp_fn)(brp_block *, brp_vertex *, brp_vertex *, brp_vertex *, void *, void *);
+typedef void (BR_ASM_CALL *brp_render3_fpx_fn)(brp_block *, brp_vertex *, brp_vertex *, brp_vertex *, void *, void *, void *, void *);
+typedef void (BR_ASM_CALL *brp_render4_fn)(brp_block *, brp_vertex *, brp_vertex *, brp_vertex *, brp_vertex *);
+
 static inline void brp_render1(brp_block *b, brp_vertex *v0) {
-    ((void (BR_ASM_CALL *)(brp_block *, brp_vertex *))b->render)(b, v0);
+    ((brp_render1_fn)b->render)(b, v0);
 }
 static inline void brp_render2(brp_block *b, brp_vertex *v0, brp_vertex *v1) {
-    ((void (BR_ASM_CALL *)(brp_block *, brp_vertex *, brp_vertex *))b->render)(b, v0, v1);
+    ((brp_render2_fn)b->render)(b, v0, v1);
 }
 static inline void brp_render3(brp_block *b, brp_vertex *v0, brp_vertex *v1, brp_vertex *v2) {
-    ((void (BR_ASM_CALL *)(brp_block *, brp_vertex *, brp_vertex *,
-        brp_vertex *))b->render)(b, v0, v1, v2);
+    ((brp_render3_fn)b->render)(b, v0, v1, v2);
 }
 static inline void brp_render3_fp(brp_block *b, brp_vertex *v0, brp_vertex *v1,
     brp_vertex *v2, void *e0, void *e1) {
-    ((void (BR_ASM_CALL *)(brp_block *, brp_vertex *, brp_vertex *,
-        brp_vertex *, void *, void *))b->render)(b, v0, v1, v2, e0, e1);
+    ((brp_render3_fp_fn)b->render)(b, v0, v1, v2, e0, e1);
 }
 static inline void brp_render3_fpx(brp_block *b, brp_vertex *v0, brp_vertex *v1,
     brp_vertex *v2, void *e0, void *e1, void *e2, void *e3) {
-    ((void (BR_ASM_CALL *)(brp_block *, brp_vertex *, brp_vertex *,
-        brp_vertex *, void *, void *, void *, void *))b->render)(
-        b, v0, v1, v2, e0, e1, e2, e3);
+    ((brp_render3_fpx_fn)b->render)(b, v0, v1, v2, e0, e1, e2, e3);
 }
 static inline void brp_render4(brp_block *b, brp_vertex *v0, brp_vertex *v1,
     brp_vertex *v2, brp_vertex *v3) {
-    ((void (BR_ASM_CALL *)(brp_block *, brp_vertex *, brp_vertex *,
-        brp_vertex *, brp_vertex *))b->render)(b, v0, v1, v2, v3);
+    ((brp_render4_fn)b->render)(b, v0, v1, v2, v3);
 }
 #endif /* __H2INC__ */
 
