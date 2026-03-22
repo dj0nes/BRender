@@ -227,6 +227,7 @@ int main(int argc, char **argv)
     SDL_Window *window;
     uint64_t    ticks_last, ticks_now;
     const char *screenshot_path = NULL;
+    int         screenshot_frame = 10;
     int         max_frames      = 0;
     int         frame_count     = 0;
     const char *model_path      = NULL;
@@ -242,6 +243,8 @@ int main(int argc, char **argv)
             g_vsync = 0;
         else if(strcmp(argv[i], "--brightness") == 0 && i + 1 < argc)
             g_brightness = (float)atof(argv[++i]);
+        else if(strcmp(argv[i], "--frame") == 0 && i + 1 < argc)
+            screenshot_frame = atoi(argv[++i]);
         else if(strcmp(argv[i], "--timeout") == 0 && i + 1 < argc)
             g_timeout = (float)atof(argv[++i]);
         else if(argv[i][0] != '-')
@@ -503,7 +506,7 @@ int main(int argc, char **argv)
         }
 
         /* Screenshot: write raw PPM (always works with RGB_888) */
-        if(screenshot_path && frame_count == 10) {
+        if(screenshot_path && frame_count == screenshot_frame) {
             unsigned char *pixels = (unsigned char *)g_colour_buf->pixels;
             if(pixels) {
                 FILE *fp = fopen(screenshot_path, "wb");
