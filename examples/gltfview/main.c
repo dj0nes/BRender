@@ -22,6 +22,7 @@
 #include <math.h>
 
 #include "gltf_to_br.h"
+#include "stb_image_write.h"
 
 #define WIN_W 1024
 #define WIN_H 768
@@ -53,7 +54,10 @@ static gltf_scene   g_gltf_scene;
 /* Orbit camera state */
 static float g_orbit_angle     = 0.0f;
 static float g_orbit_elevation = 0.3f;
-static float g_orbit_dist_mul  = 2.5f;
+static float g_orbit_dist_mul  = 0.25f;
+static float g_orbit_dist_abs = 0.0f;  /* if >0, override orbit distance (absolute units) */
+static int   g_center_override = 0;
+static float g_center_x = 0, g_center_y = 0, g_center_z = 0;
 static int   g_orbit_paused    = 0;
 static float g_accum           = 0.0f;
 
@@ -109,7 +113,7 @@ static void update_orbit(float dt)
         g_accum -= SPF;
     }
 
-    dist = g_scene_radius * g_orbit_dist_mul;
+    dist = (g_orbit_dist_abs > 0.0f) ? g_orbit_dist_abs : g_scene_radius * g_orbit_dist_mul;
 
     cam_x = g_scene_center.v[0] + dist * (float)cos(g_orbit_elevation) * (float)sin(g_orbit_angle * 3.14159f / 180.0f);
     cam_z = g_scene_center.v[2] + dist * (float)cos(g_orbit_elevation) * (float)cos(g_orbit_angle * 3.14159f / 180.0f);
@@ -155,6 +159,12 @@ static int setup_scene(const char *glb_path)
     if(g_scene_radius < 0.01f)
         g_scene_radius = 1.0f;
 
+    if(g_center_override) {
+        g_scene_center.v[0] = g_center_x;
+        g_scene_center.v[1] = g_center_y;
+        g_scene_center.v[2] = g_center_z;
+    }
+
     LOGF("scene center=(%.2f,%.2f,%.2f) radius=%.2f", (double)g_scene_center.v[0], (double)g_scene_center.v[1], (double)g_scene_center.v[2],
          (double)g_scene_radius);
 
@@ -170,8 +180,13 @@ static int setup_scene(const char *glb_path)
     cam_data->aspect        = BR_DIV(BR_SCALAR(g_colour_buf->width), BR_SCALAR(g_colour_buf->height));
     cam_data->field_of_view = BR_ANGLE_DEG(45.0);
 
-    cam_data->hither_z = g_scene_radius * 0.01f;
-    cam_data->yon_z    = g_scene_radius * 100.0f;
+    if(g_orbit_dist_abs > 0.0f) {
+        cam_data->hither_z = g_orbit_dist_abs * 0.01f;
+        cam_data->yon_z    = g_orbit_dist_abs * 100.0f;
+    } else {
+        cam_data->hither_z = g_scene_radius * 0.01f;
+        cam_data->yon_z    = g_scene_radius * 100.0f;
+    }
     if(cam_data->hither_z < 0.01f)
         cam_data->hither_z = 0.01f;
 
@@ -247,6 +262,20 @@ int main(int argc, char **argv)
             screenshot_frame = atoi(argv[++i]);
         else if(strcmp(argv[i], "--timeout") == 0 && i + 1 < argc)
             g_timeout = (float)atof(argv[++i]);
+        else if(strcmp(argv[i], "--dist") == 0 && i + 1 < argc)
+            g_orbit_dist_abs = (float)atof(argv[++i]);
+        else if(strcmp(argv[i], "--dist-mul") == 0 && i + 1 < argc)
+            g_orbit_dist_mul = (float)atof(argv[++i]);
+        else if(strcmp(argv[i], "--elevation") == 0 && i + 1 < argc)
+            g_orbit_elevation = (float)atof(argv[++i]);
+        else if(strcmp(argv[i], "--angle") == 0 && i + 1 < argc)
+            g_orbit_angle = (float)atof(argv[++i]);
+        else if(strcmp(argv[i], "--center") == 0 && i + 3 < argc) {
+            g_center_override = 1;
+            g_center_x = (float)atof(argv[++i]);
+            g_center_y = (float)atof(argv[++i]);
+            g_center_z = (float)atof(argv[++i]);
+        }
         else if(argv[i][0] != '-')
             model_path = argv[i];
     }
@@ -254,6 +283,8 @@ int main(int argc, char **argv)
     if(!model_path) {
         printf("Usage: gltfview [--no-vsync] [--brightness F] [--timeout S]\n"
                "                [--animspeed F] [--screenshot path] [--frames N]\n"
+               "                [--dist F] [--dist-mul F] [--center X Y Z]\n"
+               "                [--elevation F] [--angle F]\n"
                "                <model.glb|model.gltf>\n");
         return 1;
     }
@@ -505,28 +536,29 @@ int main(int argc, char **argv)
             }
         }
 
-        /* Screenshot: write raw PPM (always works with RGB_888) */
+        /* Screenshot: write PNG via stb_image_write */
         if(screenshot_path && frame_count == screenshot_frame) {
             unsigned char *pixels = (unsigned char *)g_colour_buf->pixels;
             if(pixels) {
-                FILE *fp = fopen(screenshot_path, "wb");
-                if(fp) {
-                    int w = g_colour_buf->width, h = g_colour_buf->height;
-                    int stride = g_colour_buf->row_bytes;
-                    fprintf(fp, "P6\n%d %d\n255\n", w, h);
+                int w = g_colour_buf->width, h = g_colour_buf->height;
+                int stride = g_colour_buf->row_bytes;
+                /* BRender RGB_888 is stored as BGR; swap to RGB for PNG */
+                unsigned char *rgb = malloc(w * h * 3);
+                if(rgb) {
                     for(int y = 0; y < h; y++) {
-                        unsigned char *row = pixels + y * stride;
-                        /* RGB_888 is stored as BGR in BRender */
+                        unsigned char *src = pixels + y * stride;
+                        unsigned char *dst = rgb + y * w * 3;
                         for(int x = 0; x < w; x++) {
-                            unsigned char bgr[3];
-                            bgr[0] = row[x * 3 + 2]; /* R */
-                            bgr[1] = row[x * 3 + 1]; /* G */
-                            bgr[2] = row[x * 3 + 0]; /* B */
-                            fwrite(bgr, 1, 3, fp);
+                            dst[x * 3 + 0] = src[x * 3 + 2];
+                            dst[x * 3 + 1] = src[x * 3 + 1];
+                            dst[x * 3 + 2] = src[x * 3 + 0];
                         }
                     }
-                    fclose(fp);
-                    LOGF("screenshot saved: %s (PPM)", screenshot_path);
+                    if(stbi_write_png(screenshot_path, w, h, 3, rgb, w * 3))
+                        LOGF("screenshot saved: %s (PNG)", screenshot_path);
+                    else
+                        LOGF("screenshot FAILED: %s", screenshot_path);
+                    free(rgb);
                 }
             }
         }
