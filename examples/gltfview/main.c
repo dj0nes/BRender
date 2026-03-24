@@ -23,6 +23,7 @@
 
 #include "gltf_to_br.h"
 #include "camera_fps.h"
+#include "ground_sky.h"
 #include "stb_image_write.h"
 
 #define WIN_W 1024
@@ -81,6 +82,10 @@ static float g_brightness = 0.30f;
 
 /* Timeout (seconds, 0 = disabled) */
 static float g_timeout = 0.0f;
+
+/* Ground / sky planes */
+static gs_plane_t g_ground;
+static gs_plane_t g_sky;
 
 /* FPS tracking */
 static float    g_fps        = 0.0f;
@@ -251,6 +256,12 @@ int main(int argc, char **argv)
     int         max_frames      = 0;
     int         frame_count     = 0;
     const char *model_path      = NULL;
+    const char *ground_path     = NULL;
+    const char *sky_path        = NULL;
+    float       ground_y        = -9999.0f;  /* sentinel: use bbox min */
+    float       ground_scale    = 1.0f;
+    float       sky_height      = -9999.0f;  /* sentinel: auto-compute */
+    float       sky_scale       = 0.1f;
 
     for(int i = 1; i < argc; i++) {
         if(strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc)
@@ -275,6 +286,18 @@ int main(int argc, char **argv)
             g_orbit_elevation = (float)atof(argv[++i]);
         else if(strcmp(argv[i], "--angle") == 0 && i + 1 < argc)
             g_orbit_angle = (float)atof(argv[++i]);
+        else if(strcmp(argv[i], "--ground") == 0 && i + 1 < argc)
+            ground_path = argv[++i];
+        else if(strcmp(argv[i], "--sky") == 0 && i + 1 < argc)
+            sky_path = argv[++i];
+        else if(strcmp(argv[i], "--ground-y") == 0 && i + 1 < argc)
+            ground_y = (float)atof(argv[++i]);
+        else if(strcmp(argv[i], "--ground-scale") == 0 && i + 1 < argc)
+            ground_scale = (float)atof(argv[++i]);
+        else if(strcmp(argv[i], "--sky-height") == 0 && i + 1 < argc)
+            sky_height = (float)atof(argv[++i]);
+        else if(strcmp(argv[i], "--sky-scale") == 0 && i + 1 < argc)
+            sky_scale = (float)atof(argv[++i]);
         else if(strcmp(argv[i], "--center") == 0 && i + 3 < argc) {
             g_center_override = 1;
             g_center_x = (float)atof(argv[++i]);
@@ -290,6 +313,8 @@ int main(int argc, char **argv)
                "                [--animspeed F] [--screenshot path] [--frames N]\n"
                "                [--dist F] [--dist-mul F] [--center X Y Z]\n"
                "                [--elevation F] [--angle F]\n"
+               "                [--ground <texture>] [--ground-y F] [--ground-scale F]\n"
+               "                [--sky <texture>] [--sky-height F] [--sky-scale F]\n"
                "                <model.glb|model.gltf>\n");
         return 1;
     }
@@ -347,6 +372,28 @@ int main(int argc, char **argv)
         BrPixelmapFree(g_screen);
         BrEnd();
         return 1;
+    }
+
+    /* Ground plane */
+    if(ground_path) {
+        br_pixelmap *gtex = gs_load_texture(ground_path);
+        float gy = (ground_y > -9000.0f) ? ground_y : g_gltf_scene.bbox_min.v[1];
+        g_ground = gs_create_ground(gtex, g_scene_radius, gy, ground_scale);
+        if(g_ground.actor) {
+            BrActorAdd(g_world, g_ground.actor);
+            LOGF("ground plane: y=%.2f scale=%.3f tex=%s", (double)gy, (double)ground_scale, ground_path);
+        }
+    }
+
+    /* Sky plane */
+    if(sky_path) {
+        br_pixelmap *stex = gs_load_texture(sky_path);
+        float sh = (sky_height > -9000.0f) ? sky_height : g_scene_center.v[1] + g_scene_radius * 1.5f;
+        g_sky = gs_create_sky(stex, g_scene_radius, sh, sky_scale);
+        if(g_sky.actor) {
+            BrActorAdd(g_world, g_sky.actor);
+            LOGF("sky plane: height=%.2f tex=%s", (double)sh, sky_path);
+        }
     }
 
     apply_brightness();
@@ -533,9 +580,17 @@ int main(int argc, char **argv)
         if(g_anim_time >= 0.0f)
             gltf_update_animation(&g_gltf_scene, g_anim_time);
 
+        /* Update ground/sky plane positions to track camera */
+        {
+            float cam_x = g_camera->t.t.look_up.t.v[0];
+            float cam_z = g_camera->t.t.look_up.t.v[2];
+            gs_update(&g_ground, cam_x, cam_z);
+            gs_update(&g_sky, cam_x, cam_z);
+        }
+
         /* Render */
         BrRendererFrameBegin();
-        BrPixelmapFill(g_colour_buf, BR_COLOUR_RGB(40, 40, 50));
+        BrPixelmapFill(g_colour_buf, (g_sky.actor ? BR_COLOUR_RGB(20, 15, 25) : BR_COLOUR_RGB(40, 40, 50)));
         BrPixelmapFill(g_depth_buf, 0xFFFFFFFF);
         BrZbSceneRender(g_world, g_camera, g_colour_buf, g_depth_buf);
         BrRendererFrameEnd();
