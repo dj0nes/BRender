@@ -4,6 +4,8 @@ add_executable(gltfview
         main.c
         gltf_to_br.c
         gltf_to_br.h
+        camera_fps.c
+        camera_fps.h
         vendor_impl.c
 )
 

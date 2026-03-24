@@ -22,6 +22,7 @@
 #include <math.h>
 
 #include "gltf_to_br.h"
+#include "camera_fps.h"
 #include "stb_image_write.h"
 
 #define WIN_W 1024
@@ -55,6 +56,10 @@ static gltf_scene   g_gltf_scene;
 static float g_orbit_angle     = 0.0f;
 static float g_orbit_elevation = 0.3f;
 static float g_orbit_dist_mul  = 0.25f;
+
+/* FPS roaming camera (Tab to toggle) */
+static fps_camera_t g_fps_cam;
+static int g_fps_mode = 0;
 static float g_orbit_dist_abs = 0.0f;  /* if >0, override orbit distance (absolute units) */
 static int   g_center_override = 0;
 static float g_center_x = 0, g_center_y = 0, g_center_z = 0;
@@ -465,6 +470,23 @@ int main(int argc, char **argv)
                                 g_brightness = 0.0f;
                             apply_brightness();
                             break;
+                        case SDL_SCANCODE_TAB:
+                            g_fps_mode ^= 1;
+                            if(g_fps_mode) {
+                                float dist = (g_orbit_dist_abs > 0.0f) ? g_orbit_dist_abs : g_scene_radius * g_orbit_dist_mul;
+                                float ar = g_orbit_angle * 3.14159f / 180.0f;
+                                float cx = g_scene_center.v[0] + dist * cosf(g_orbit_elevation) * sinf(ar);
+                                float cz = g_scene_center.v[2] + dist * cosf(g_orbit_elevation) * cosf(ar);
+                                float cy = g_scene_center.v[1] + dist * sinf(g_orbit_elevation);
+                                fps_camera_init_look_at(&g_fps_cam, cx, cy, cz,
+                                                        g_scene_center.v[0], g_scene_center.v[1], g_scene_center.v[2],
+                                                        g_scene_radius);
+                                SDL_SetWindowRelativeMouseMode(window, true);
+                                { float fx, fy; SDL_GetRelativeMouseState(&fx, &fy); } /* flush */
+                            } else {
+                                SDL_SetWindowRelativeMouseMode(window, false);
+                            }
+                            break;
                         default:
                             break;
                     }
@@ -472,7 +494,37 @@ int main(int argc, char **argv)
             }
         }
 
-        update_orbit(dt);
+        if(g_fps_mode) {
+            const bool *keys = SDL_GetKeyboardState(NULL);
+            fps_input_t fin;
+            float mx, my, fx, fy, fz;
+
+            fin.fwd   = keys[SDL_SCANCODE_W];
+            fin.back  = keys[SDL_SCANCODE_S];
+            fin.left  = keys[SDL_SCANCODE_A];
+            fin.right = keys[SDL_SCANCODE_D];
+            fin.fast  = keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT];
+
+            SDL_GetRelativeMouseState(&mx, &my);
+            fin.mouse_dx = mx;
+            fin.mouse_dy = my;
+
+            fps_camera_update(&g_fps_cam, dt, &fin);
+
+            fps_camera_forward(&g_fps_cam, &fx, &fy, &fz);
+            g_camera->t.type                = BR_TRANSFORM_LOOK_UP;
+            g_camera->t.t.look_up.look.v[0] = fx;
+            g_camera->t.t.look_up.look.v[1] = fy;
+            g_camera->t.t.look_up.look.v[2] = fz;
+            g_camera->t.t.look_up.up.v[0]   = 0;
+            g_camera->t.t.look_up.up.v[1]   = 1;
+            g_camera->t.t.look_up.up.v[2]   = 0;
+            g_camera->t.t.look_up.t.v[0]    = g_fps_cam.pos_x;
+            g_camera->t.t.look_up.t.v[1]    = g_fps_cam.pos_y;
+            g_camera->t.t.look_up.t.v[2]    = g_fps_cam.pos_z;
+        } else {
+            update_orbit(dt);
+        }
 
         if(g_anim_time < 0.0f)
             g_anim_time += dt;
@@ -501,8 +553,12 @@ int main(int argc, char **argv)
             snprintf(hud_buf, sizeof(hud_buf), "ka=%.2f  VSync:%s", (double)g_brightness, g_vsync ? "on" : "off");
             BrPixelmapText(g_colour_buf, x0, y0, BR_COLOUR_RGB(200, 200, 200), BrFontProp7x9, hud_buf);
             y0 += lh + 2;
-            BrPixelmapText(g_colour_buf, x0, y0, BR_COLOUR_RGB(255, 255, 255), BrFontProp7x9,
-                           "SPACE:Pause  Arrows:Orbit  1/0:Zoom  +/-:Speed  V:VSync  B/N:Bright  Q:Quit");
+            if(g_fps_mode)
+                BrPixelmapText(g_colour_buf, x0, y0, BR_COLOUR_RGB(255, 255, 255), BrFontProp7x9,
+                               "TAB:Orbit  WASD:Move  Shift:Fast  Mouse:Look  Q:Quit");
+            else
+                BrPixelmapText(g_colour_buf, x0, y0, BR_COLOUR_RGB(255, 255, 255), BrFontProp7x9,
+                               "TAB:Roam  SPACE:Pause  Arrows:Orbit  1/0:Zoom  +/-:Speed  V:VSync  Q:Quit");
         }
 
         BrPixelmapDoubleBuffer(g_screen, g_colour_buf);
