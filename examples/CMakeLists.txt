@@ -14,6 +14,7 @@ endif()
 if(TARGET BRender::Drivers::SDL3Dev AND TARGET BRender::Drivers::SoftPrim)
     add_subdirectory(gltfview)
     add_subdirectory(softcube)
+    add_subdirectory(${CMAKE_SOURCE_DIR}/../src/mw2 ${CMAKE_BINARY_DIR}/mw2)
 endif()
 
 if(TARGET BRender::Drivers::MCGA AND TARGET BRender::Drivers::SoftPrim)
