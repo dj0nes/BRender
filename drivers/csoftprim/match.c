@@ -27,6 +27,66 @@
  * RGB_888 Triangles
  */
 static struct local_block primInfo_t24[] = {
+	/* Perspective-correct Textured + Smooth Gouraud, Z-buffered */
+	{
+		.p = {
+			.render = (brp_render_fn *)TriangleRenderPerspTexturedSmooth_RGB_888_ZB,
+			.identifier = "Persp Textured Smooth RGB_888 Z16 (C)",
+			.type = BRT_TRIANGLE,
+			.flags = 0,
+			.constant_components = 0,
+			.vertex_components = CM_SX | CM_SY | CM_SZ | CM_U | CM_V | CM_R | CM_G | CM_B,
+			.convert_mask_f = 0,
+			.convert_mask_x = (1 << C_SX) | (1 << C_SY) | (1 << C_SZ) | (1 << C_U) | (1 << C_V) | (1 << C_R) | (1 << C_G) | (1 << C_B),
+			.convert_mask_i = 0,
+			.constant_mask = 0,
+		},
+		.colour_scales = { BR_SCALAR(255.0), BR_SCALAR(255.0), BR_SCALAR(255.0), BR_SCALAR(1.0) },
+		.colour_offsets = { BR_SCALAR(0.0), BR_SCALAR(0.0), BR_SCALAR(0.0), BR_SCALAR(0.0) },
+		.range_flags = 0,
+		.work = &work,
+		.flags_mask = PRIMF_SMOOTH | PRIMF_PERSPECTIVE,
+		.flags_cmp = PRIMF_SMOOTH | PRIMF_PERSPECTIVE,
+		.depth_type = BR_PMT_DEPTH_16,
+		.texture_type = BR_PMT_RGB_888,
+		.shade_type = PMT_NONE,
+		.blend_type = PMT_NONE,
+		.screendoor_type = PMT_NONE,
+		.lighting_type = PMT_NONE,
+		.bump_type = PMT_NONE,
+		.fog_type = PMT_NONE,
+		.input_colour_type = BRT_RGB,
+	},
+	/* Perspective-correct Textured + Flat, Z-buffered */
+	{
+		.p = {
+			.render = (brp_render_fn *)TriangleRenderPerspTextured_RGB_888_ZB,
+			.identifier = "Persp Textured Flat RGB_888 Z16 (C)",
+			.type = BRT_TRIANGLE,
+			.flags = 0,
+			.constant_components = 0,
+			.vertex_components = CM_SX | CM_SY | CM_SZ | CM_U | CM_V,
+			.convert_mask_f = 0,
+			.convert_mask_x = (1 << C_SX) | (1 << C_SY) | (1 << C_SZ) | (1 << C_U) | (1 << C_V),
+			.convert_mask_i = 0,
+			.constant_mask = 0,
+		},
+		.colour_scales = { BR_SCALAR(255.0), BR_SCALAR(255.0), BR_SCALAR(255.0), BR_SCALAR(1.0) },
+		.colour_offsets = { BR_SCALAR(0.0), BR_SCALAR(0.0), BR_SCALAR(0.0), BR_SCALAR(0.0) },
+		.range_flags = 0,
+		.work = &work,
+		.flags_mask = PRIMF_PERSPECTIVE,
+		.flags_cmp = PRIMF_PERSPECTIVE,
+		.depth_type = BR_PMT_DEPTH_16,
+		.texture_type = BR_PMT_RGB_888,
+		.shade_type = PMT_NONE,
+		.blend_type = PMT_NONE,
+		.screendoor_type = PMT_NONE,
+		.lighting_type = PMT_NONE,
+		.bump_type = PMT_NONE,
+		.fog_type = PMT_NONE,
+		.input_colour_type = BRT_RGB,
+	},
 	/* Textured + Smooth Gouraud, Z-buffered */
 	{
 		.p = {

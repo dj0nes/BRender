@@ -72,13 +72,13 @@ static br_scalar  g_scene_radius;
 
 /* Animation */
 static float g_anim_time  = -1.0f;
-static float g_anim_speed = 0.17f;
+static float g_anim_speed = 1.0f;
 
 /* VSync (default: on) */
 static int g_vsync = 1;
 
 /* Brightness (material ambient ka) */
-static float g_brightness = 0.30f;
+static float g_brightness = 0.60f;
 
 /* Timeout (seconds, 0 = disabled) */
 static float g_timeout = 0.0f;
@@ -262,6 +262,7 @@ int main(int argc, char **argv)
     float       ground_scale    = 1.0f;
     float       sky_height      = -9999.0f;  /* sentinel: auto-compute */
     float       sky_scale       = 0.1f;
+    float       sky_scroll      = 0.0f; /* UV/sec, 0=disabled. MW2 typical: ~0.05 */
 
     for(int i = 1; i < argc; i++) {
         if(strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc)
@@ -298,6 +299,8 @@ int main(int argc, char **argv)
             sky_height = (float)atof(argv[++i]);
         else if(strcmp(argv[i], "--sky-scale") == 0 && i + 1 < argc)
             sky_scale = (float)atof(argv[++i]);
+        else if(strcmp(argv[i], "--sky-scroll") == 0 && i + 1 < argc)
+            sky_scroll = (float)atof(argv[++i]);
         else if(strcmp(argv[i], "--center") == 0 && i + 3 < argc) {
             g_center_override = 1;
             g_center_x = (float)atof(argv[++i]);
@@ -314,7 +317,7 @@ int main(int argc, char **argv)
                "                [--dist F] [--dist-mul F] [--center X Y Z]\n"
                "                [--elevation F] [--angle F]\n"
                "                [--ground <texture>] [--ground-y F] [--ground-scale F]\n"
-               "                [--sky <texture>] [--sky-height F] [--sky-scale F]\n"
+               "                [--sky <texture>] [--sky-height F] [--sky-scale F] [--sky-scroll F]\n"
                "                <model.glb|model.gltf>\n");
         return 1;
     }
@@ -374,7 +377,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    /* Ground plane */
+    /* Ground plane: explicit --ground flag takes priority, then auto-extracted */
     if(ground_path) {
         br_pixelmap *gtex = gs_load_texture(ground_path);
         float gy = (ground_y > -9000.0f) ? ground_y : g_gltf_scene.bbox_min.v[1];
@@ -383,22 +386,45 @@ int main(int argc, char **argv)
             BrActorAdd(g_world, g_ground.actor);
             LOGF("ground plane: y=%.2f scale=%.3f tex=%s", (double)gy, (double)ground_scale, ground_path);
         }
+    } else if(g_gltf_scene.ground_tex) {
+        float gy = g_gltf_scene.ground_y;
+        /* Auto tiling: original MW2 ground tiles ~20x across ~1000 units.
+         * Our plane is 10*scene_radius wide, so scale = 20 * 10*R / (1000 * 10) = 0.02*R */
+        float auto_scale = 0.02f * g_scene_radius;
+        g_ground = gs_create_ground(g_gltf_scene.ground_tex, g_scene_radius, gy, auto_scale);
+        if(g_ground.actor) {
+            BrActorAdd(g_world, g_ground.actor);
+            LOGF("auto-ground plane: y=%.2f (from GLB)", (double)gy);
+        }
     }
 
-    /* Sky plane */
+    /* Sky plane: explicit --sky flag takes priority, then auto-extracted */
     if(sky_path) {
         br_pixelmap *stex = gs_load_texture(sky_path);
         float sh = (sky_height > -9000.0f) ? sky_height : g_scene_center.v[1] + g_scene_radius * 1.5f;
         g_sky = gs_create_sky(stex, g_scene_radius, sh, sky_scale);
         if(g_sky.actor) {
             BrActorAdd(g_world, g_sky.actor);
-            LOGF("sky plane: height=%.2f tex=%s", (double)sh, sky_path);
+            if(sky_scroll > 0.0f)
+                gs_set_sky_scroll_rate(&g_sky, sky_scroll);
+            LOGF("sky plane: height=%.2f scroll=%.4f tex=%s", (double)sh, (double)sky_scroll, sky_path);
+        }
+    } else if(g_gltf_scene.sky_tex) {
+        float sh = g_gltf_scene.sky_y;
+        if(sh <= g_gltf_scene.ground_y + 0.1f)
+            sh = g_scene_center.v[1] + g_scene_radius * 1.5f;
+        g_sky = gs_create_sky(g_gltf_scene.sky_tex, g_scene_radius, sh, 0.5f);
+        if(g_sky.actor) {
+            BrActorAdd(g_world, g_sky.actor);
+            /* MW2 typical: tile_sky=4, anim_rate=0.0004, 30fps → ~0.048 UV/sec */
+            gs_set_sky_scroll_rate(&g_sky, 0.048f);
+            LOGF("auto-sky plane: height=%.2f scroll=0.048 (from GLB)", (double)sh);
         }
     }
 
     apply_brightness();
 
-    LOGF("anim_speed=%.4f, anim_duration=%.3fs", (double)g_anim_speed, (double)g_gltf_scene.anim.duration);
+    LOGF("anim_speed=%.4f, %d animations loaded", (double)g_anim_speed, g_gltf_scene.nanims);
     LOG("scene ready, entering render loop");
 
     ticks_last = SDL_GetTicksNS();
@@ -485,16 +511,16 @@ int main(int argc, char **argv)
                                 g_orbit_dist_mul = 10.0f;
                             break;
                         case SDL_SCANCODE_EQUALS: /* +/= key */
-                            g_anim_speed *= 2.0f;
+                            g_anim_speed += 0.5f;
                             if(g_anim_speed > 16.0f)
                                 g_anim_speed = 16.0f;
-                            LOGF("anim speed: %.2fx", (double)g_anim_speed);
+                            LOGF("anim speed: %.1fx", (double)g_anim_speed);
                             break;
                         case SDL_SCANCODE_MINUS:
-                            g_anim_speed *= 0.5f;
-                            if(g_anim_speed < 0.0625f)
-                                g_anim_speed = 0.0625f;
-                            LOGF("anim speed: %.2fx", (double)g_anim_speed);
+                            g_anim_speed -= 0.5f;
+                            if(g_anim_speed < 0.0f)
+                                g_anim_speed = 0.0f;
+                            LOGF("anim speed: %.1fx", (double)g_anim_speed);
                             break;
                         case SDL_SCANCODE_BACKSPACE:
                             g_anim_speed = 1.0f;
@@ -584,8 +610,8 @@ int main(int argc, char **argv)
         {
             float cam_x = g_camera->t.t.look_up.t.v[0];
             float cam_z = g_camera->t.t.look_up.t.v[2];
-            gs_update(&g_ground, cam_x, cam_z);
-            gs_update(&g_sky, cam_x, cam_z);
+            gs_update(&g_ground, cam_x, cam_z, dt);
+            gs_update(&g_sky, cam_x, cam_z, dt);
         }
 
         /* Render */

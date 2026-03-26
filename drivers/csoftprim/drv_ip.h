@@ -62,6 +62,8 @@ void BR_ASM_CALL TriangleRenderFlat_RGB_888_ZB(brp_block *block, brp_vertex *v0,
 void BR_ASM_CALL TriangleRenderSmooth_RGB_888_ZB(brp_block *block, brp_vertex *v0, brp_vertex *v1, brp_vertex *v2);
 void BR_ASM_CALL TriangleRenderTextured_RGB_888_ZB(brp_block *block, brp_vertex *v0, brp_vertex *v1, brp_vertex *v2);
 void BR_ASM_CALL TriangleRenderTexturedSmooth_RGB_888_ZB(brp_block *block, brp_vertex *v0, brp_vertex *v1, brp_vertex *v2);
+void BR_ASM_CALL TriangleRenderPerspTextured_RGB_888_ZB(brp_block *block, brp_vertex *v0, brp_vertex *v1, brp_vertex *v2);
+void BR_ASM_CALL TriangleRenderPerspTexturedSmooth_RGB_888_ZB(brp_block *block, brp_vertex *v0, brp_vertex *v1, brp_vertex *v2);
 
 /*
  * l_piz.c

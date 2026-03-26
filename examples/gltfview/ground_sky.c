@@ -153,7 +153,7 @@ gs_plane_t gs_create_ground(br_pixelmap *texture, float scene_radius,
                              float y, float uv_scale)
 {
     gs_plane_t plane;
-    float half_extent = scene_radius * 100.0f;
+    float half_extent = scene_radius * 5.0f;
 
     memset(&plane, 0, sizeof(plane));
 
@@ -163,7 +163,8 @@ gs_plane_t gs_create_ground(br_pixelmap *texture, float scene_radius,
     plane.material->ka = BR_UFRACTION(0.90);
     plane.material->kd = BR_UFRACTION(0.10);
     plane.material->ks = BR_UFRACTION(0.0);
-    plane.material->flags = BR_MATF_LIGHT | BR_MATF_SMOOTH | BR_MATF_TWO_SIDED;
+    plane.material->flags = BR_MATF_LIGHT | BR_MATF_SMOOTH | BR_MATF_TWO_SIDED
+                          | BR_MATF_PERSPECTIVE;
 
     if (texture) {
         plane.material->colour_map = texture;
@@ -215,7 +216,7 @@ gs_plane_t gs_create_sky(br_pixelmap *texture, float scene_radius,
                           float height, float uv_scale)
 {
     gs_plane_t plane;
-    float half_extent = scene_radius * 100.0f;
+    float half_extent = scene_radius * 5.0f;
     float sky_tile;
 
     memset(&plane, 0, sizeof(plane));
@@ -230,7 +231,8 @@ gs_plane_t gs_create_sky(br_pixelmap *texture, float scene_radius,
     plane.material->ka = BR_UFRACTION(1.0);
     plane.material->kd = BR_UFRACTION(0.0);
     plane.material->ks = BR_UFRACTION(0.0);
-    plane.material->flags = BR_MATF_LIGHT | BR_MATF_SMOOTH | BR_MATF_TWO_SIDED;
+    plane.material->flags = BR_MATF_LIGHT | BR_MATF_SMOOTH | BR_MATF_TWO_SIDED
+                          | BR_MATF_PERSPECTIVE;
 
     if (texture) {
         plane.material->colour_map = texture;
@@ -270,6 +272,15 @@ gs_plane_t gs_create_sky(br_pixelmap *texture, float scene_radius,
 
     plane.uv_scale = uv_scale / scene_radius;
 
+    /* MW2-style diagonal sky scroll: both U and V accumulators advance
+     * at tile_sky * anim_rate per frame.  We store tile_sky so that
+     * scroll_v starts offset by one full span (the original keeps
+     * scroll_u starting at 0 and scroll_v starting at tile_sky). */
+    plane.tile_sky   = sky_tile;
+    plane.scroll_u   = 0.0f;
+    plane.scroll_v   = sky_tile;
+    plane.scroll_rate = 0.0f;  /* caller sets via gs_set_sky_scroll_rate */
+
     LOGF("gs_create_sky: half_extent=%.1f height=%.2f uv_scale=%.1f subdiv=%d",
          (double)half_extent, (double)height, (double)uv_scale, GRID_SUBDIV);
 
@@ -277,10 +288,20 @@ gs_plane_t gs_create_sky(br_pixelmap *texture, float scene_radius,
 }
 
 /* ------------------------------------------------------------------ */
+/* Sky scroll rate                                                      */
+/* ------------------------------------------------------------------ */
+
+void gs_set_sky_scroll_rate(gs_plane_t *plane, float rate)
+{
+    if (!plane) return;
+    plane->scroll_rate = rate;
+}
+
+/* ------------------------------------------------------------------ */
 /* Per-frame camera tracking                                            */
 /* ------------------------------------------------------------------ */
 
-void gs_update(gs_plane_t *plane, float cam_x, float cam_z)
+void gs_update(gs_plane_t *plane, float cam_x, float cam_z, float dt)
 {
     if (!plane || !plane->actor) return;
 
@@ -288,10 +309,21 @@ void gs_update(gs_plane_t *plane, float cam_x, float cam_z)
     plane->actor->t.t.mat.m[3][0] = BR_SCALAR(cam_x);
     plane->actor->t.t.mat.m[3][2] = BR_SCALAR(cam_z);
 
+    /* Sky scroll: advance both UV accumulators by scroll_rate * dt.
+     * MW2 scrolls diagonally (both U and V drift together). The UV
+     * translation in the map_transform slides the texture across the
+     * plane, combining camera-tracking and time-based scroll. */
+    if (plane->scroll_rate != 0.0f) {
+        float advance = plane->scroll_rate * dt;
+        plane->scroll_u += advance;
+        plane->scroll_v += advance;
+    }
+
     /* Offset UV so texture stays fixed in world space.
      * Vertex UVs are in model space; adding (cam * uv_scale) to the
-     * map_transform translation converts them to world-space UVs. */
-    plane->material->map_transform.m[2][0] = BR_SCALAR(cam_x * plane->uv_scale);
-    plane->material->map_transform.m[2][1] = BR_SCALAR(cam_z * plane->uv_scale);
+     * map_transform translation converts them to world-space UVs.
+     * For sky planes, the scroll accumulator adds the cloud drift. */
+    plane->material->map_transform.m[2][0] = BR_SCALAR(cam_x * plane->uv_scale + plane->scroll_u);
+    plane->material->map_transform.m[2][1] = BR_SCALAR(cam_z * plane->uv_scale + plane->scroll_v);
     BrMaterialUpdate(plane->material, BR_MATU_ALL);
 }

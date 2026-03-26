@@ -8,9 +8,10 @@
  * node hierarchy. Vertices stay in local mesh space; BRender composes
  * transforms down the tree during rendering.
  *
- * Animation: parses the first glTF animation (STEP + LINEAR interp),
- * evaluates per-channel keyframes, and writes TRS-composed matrices
- * to actor transforms each frame.
+ * Animation: parses all glTF animations (STEP + LINEAR interp),
+ * plays them simultaneously, evaluates per-channel keyframes,
+ * and writes TRS-composed matrices to actor transforms each frame.
+ * Animations named *_oneshot clamp at their end; others loop.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -147,7 +148,7 @@ static br_material *convert_material(cgltf_material *gmat, cgltf_data *data) {
     mat->ks = BR_UFRACTION(1.0f - roughness);
     mat->power = BR_SCALAR(20.0);
 
-    mat->flags = BR_MATF_LIGHT | BR_MATF_SMOOTH | BR_MATF_TWO_SIDED;
+    mat->flags = BR_MATF_LIGHT | BR_MATF_SMOOTH | BR_MATF_TWO_SIDED | BR_MATF_PERSPECTIVE;
 
     /* Load base color texture if present */
     if (gmat->pbr_metallic_roughness.base_color_texture.texture) {
@@ -490,6 +491,37 @@ static br_actor *build_node_actor(cgltf_node *node, cgltf_data *data,
     if (node->mesh) {
         cgltf_mesh *mesh = node->mesh;
         float world_m[16];
+        int is_ground = 0, is_sky = 0;
+
+        /* Auto-ground: detect MW2_Ground / MW2_Sky nodes by name */
+        if (node->name) {
+            if (strstr(node->name, "Ground") || strstr(node->name, "ground"))
+                is_ground = 1;
+            if (strstr(node->name, "Sky") || strstr(node->name, "sky"))
+                is_sky = 1;
+        }
+
+        if (is_ground || is_sky) {
+            /* Extract the texture from the first primitive's material */
+            cgltf_primitive *prim = &mesh->primitives[0];
+            if (prim->material && mat_map) {
+                cgltf_size mat_i = (cgltf_size)(prim->material - data->materials);
+                br_material *mat = mat_map[mat_i];
+                if (mat && mat->colour_map) {
+                    if (is_ground) out->ground_tex = mat->colour_map;
+                    if (is_sky)    out->sky_tex = mat->colour_map;
+                }
+            }
+            /* Extract Y position from the node's world transform */
+            cgltf_node_transform_world(node, world_m);
+            if (is_ground) out->ground_y = world_m[13]; /* m[3][1] in column-major */
+            if (is_sky)    out->sky_y = world_m[13];
+            LOGF("auto-ground: skipping node '%s' (y=%.2f, tex=%s)",
+                 node->name, (double)world_m[13],
+                 is_ground ? (out->ground_tex ? "yes" : "no") :
+                             (out->sky_tex ? "yes" : "no"));
+            goto skip_mesh;
+        }
 
         /* World transform for AABB computation only */
         cgltf_node_transform_world(node, world_m);
@@ -540,6 +572,7 @@ static br_actor *build_node_actor(cgltf_node *node, cgltf_data *data,
             }
         }
     }
+skip_mesh:
 
     /* Recurse into children */
     for (cgltf_size ci = 0; ci < node->children_count; ci++) {
@@ -554,23 +587,31 @@ static br_actor *build_node_actor(cgltf_node *node, cgltf_data *data,
 /* Animation parsing                                                    */
 /* ------------------------------------------------------------------ */
 
-static void parse_animation(cgltf_data *data, gltf_scene *out) {
-    cgltf_animation *anim;
+static void parse_one_animation(cgltf_animation *anim, cgltf_data *data,
+                                gltf_animation *out) {
     float max_time = 0.0f;
+    const char *name = anim->name ? anim->name : "";
+    size_t name_len;
 
-    if (data->animations_count == 0) return;
+    /* Copy name (truncate to fit) */
+    name_len = strlen(name);
+    if (name_len >= sizeof(out->name))
+        name_len = sizeof(out->name) - 1;
+    memcpy(out->name, name, name_len);
+    out->name[name_len] = '\0';
 
-    anim = &data->animations[0];
-    out->anim.nchannels = (int)anim->channels_count;
-    out->anim.channels = (gltf_channel *)calloc(anim->channels_count, sizeof(gltf_channel));
+    /* Determine loop behavior from name suffix */
+    out->loop = 1; /* default: loop */
+    if (name_len >= 7 && strcmp(name + name_len - 7, "oneshot") == 0)
+        out->loop = 0;
 
-    LOGF("animation '%s': %d channels",
-         anim->name ? anim->name : "?", (int)anim->channels_count);
+    out->nchannels = (int)anim->channels_count;
+    out->channels = (gltf_channel *)calloc(anim->channels_count, sizeof(gltf_channel));
 
     for (cgltf_size ci = 0; ci < anim->channels_count; ci++) {
         cgltf_animation_channel *ch = &anim->channels[ci];
         cgltf_animation_sampler *samp = ch->sampler;
-        gltf_channel *gc = &out->anim.channels[ci];
+        gltf_channel *gc = &out->channels[ci];
         int components;
 
         /* Target node */
@@ -617,8 +658,27 @@ static void parse_animation(cgltf_data *data, gltf_scene *out) {
         }
     }
 
-    out->anim.duration = max_time;
-    LOGF("animation duration: %.3fs", (double)max_time);
+    out->duration = max_time;
+}
+
+static void parse_animations(cgltf_data *data, gltf_scene *out) {
+    cgltf_size ai;
+
+    out->nanims = (int)data->animations_count;
+    if (out->nanims == 0) {
+        out->anims = NULL;
+        return;
+    }
+
+    out->anims = (gltf_animation *)calloc(out->nanims, sizeof(gltf_animation));
+
+    for (ai = 0; ai < data->animations_count; ai++) {
+        parse_one_animation(&data->animations[ai], data, &out->anims[ai]);
+        LOGF("animation[%d] '%s': %d channels, %.3fs, %s",
+             (int)ai, out->anims[ai].name, out->anims[ai].nchannels,
+             (double)out->anims[ai].duration,
+             out->anims[ai].loop ? "loop" : "oneshot");
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -628,49 +688,59 @@ static void parse_animation(cgltf_data *data, gltf_scene *out) {
 void gltf_update_animation(gltf_scene *scene, float time) {
     float trs[MAX_ANIM_NODES * 10];
     int dirty[MAX_ANIM_NODES];
-    float wrapped;
-    int ci, ni;
+    int ai, ci, ni;
 
-    if (scene->anim.nchannels == 0 || scene->anim.duration <= 0.0f) return;
+    if (scene->nanims == 0) return;
     if (scene->nnodes > MAX_ANIM_NODES) return;
-
-    wrapped = (float)fmod(time, scene->anim.duration);
 
     /* Start from rest pose */
     memcpy(trs, scene->rest_trs, scene->nnodes * 10 * sizeof(float));
     memset(dirty, 0, scene->nnodes * sizeof(int));
 
-    /* Evaluate each channel and collect per-node TRS */
-    for (ci = 0; ci < scene->anim.nchannels; ci++) {
-        gltf_channel *ch = &scene->anim.channels[ci];
-        float value[4];
-        float *node_trs;
+    /* Evaluate all animations simultaneously */
+    for (ai = 0; ai < scene->nanims; ai++) {
+        gltf_animation *anim = &scene->anims[ai];
+        float anim_time;
 
-        if (ch->path < 0 || ch->node_index < 0 || ch->node_index >= scene->nnodes)
+        if (anim->nchannels == 0 || anim->duration <= 0.0f)
             continue;
 
-        node_trs = &trs[ch->node_index * 10];
-        dirty[ch->node_index] = 1;
+        if (anim->loop)
+            anim_time = (float)fmod(time, anim->duration);
+        else
+            anim_time = (time > anim->duration) ? anim->duration : time;
 
-        evaluate_channel(ch, wrapped, value);
+        for (ci = 0; ci < anim->nchannels; ci++) {
+            gltf_channel *ch = &anim->channels[ci];
+            float value[4];
+            float *node_trs;
 
-        switch (ch->path) {
-            case 0: /* translation */
-                node_trs[0] = value[0];
-                node_trs[1] = value[1];
-                node_trs[2] = value[2];
-                break;
-            case 1: /* rotation */
-                node_trs[3] = value[0];
-                node_trs[4] = value[1];
-                node_trs[5] = value[2];
-                node_trs[6] = value[3];
-                break;
-            case 2: /* scale */
-                node_trs[7] = value[0];
-                node_trs[8] = value[1];
-                node_trs[9] = value[2];
-                break;
+            if (ch->path < 0 || ch->node_index < 0 || ch->node_index >= scene->nnodes)
+                continue;
+
+            node_trs = &trs[ch->node_index * 10];
+            dirty[ch->node_index] = 1;
+
+            evaluate_channel(ch, anim_time, value);
+
+            switch (ch->path) {
+                case 0: /* translation */
+                    node_trs[0] = value[0];
+                    node_trs[1] = value[1];
+                    node_trs[2] = value[2];
+                    break;
+                case 1: /* rotation */
+                    node_trs[3] = value[0];
+                    node_trs[4] = value[1];
+                    node_trs[5] = value[2];
+                    node_trs[6] = value[3];
+                    break;
+                case 2: /* scale */
+                    node_trs[7] = value[0];
+                    node_trs[8] = value[1];
+                    node_trs[9] = value[2];
+                    break;
+            }
         }
     }
 
@@ -772,8 +842,9 @@ int gltf_load_scene(const char *filename, gltf_scene *out) {
     }
 
     /* Parse animation data (must happen before cgltf_free) */
-    memset(&out->anim, 0, sizeof(out->anim));
-    parse_animation(data, out);
+    out->anims = NULL;
+    out->nanims = 0;
+    parse_animations(data, out);
 
     LOGF("converted %d models, %d materials, %d nodes",
          out->nmodels, out->nmaterials, out->nnodes);
@@ -787,19 +858,23 @@ int gltf_load_scene(const char *filename, gltf_scene *out) {
 }
 
 void gltf_free_scene(gltf_scene *scene) {
-    int ci;
+    int ai, ci;
 
     if (scene->models)    free(scene->models);
     if (scene->materials) free(scene->materials);
 
     /* Free animation data */
-    for (ci = 0; ci < scene->anim.nchannels; ci++) {
-        if (scene->anim.channels[ci].keys.times)
-            free(scene->anim.channels[ci].keys.times);
-        if (scene->anim.channels[ci].keys.values)
-            free(scene->anim.channels[ci].keys.values);
+    for (ai = 0; ai < scene->nanims; ai++) {
+        gltf_animation *anim = &scene->anims[ai];
+        for (ci = 0; ci < anim->nchannels; ci++) {
+            if (anim->channels[ci].keys.times)
+                free(anim->channels[ci].keys.times);
+            if (anim->channels[ci].keys.values)
+                free(anim->channels[ci].keys.values);
+        }
+        if (anim->channels) free(anim->channels);
     }
-    if (scene->anim.channels) free(scene->anim.channels);
+    if (scene->anims) free(scene->anims);
 
     if (scene->node_actors) free(scene->node_actors);
     if (scene->rest_trs)    free(scene->rest_trs);
