@@ -4,7 +4,7 @@
  * Loads a .glb/.gltf file and converts meshes + materials into
  * BRender br_model/br_material objects, registered via BrModelAdd/BrMaterialAdd.
  * Builds a nested BRender actor tree mirroring the glTF node hierarchy.
- * Supports animation playback (v1: first animation, STEP + LINEAR).
+ * Supports animation playback (multiple simultaneous, STEP + LINEAR).
  * No cgltf types leak into this header.
  */
 #ifndef GLTF_TO_BR_H
@@ -30,9 +30,11 @@ typedef struct gltf_channel {
 } gltf_channel;
 
 typedef struct gltf_animation {
+    char name[64];
     float duration;
     int nchannels;
     gltf_channel *channels;
+    int loop;          /* 1=loop (wrap time), 0=oneshot (clamp at end) */
 } gltf_animation;
 
 /* ------------------------------------------------------------------ */
@@ -50,7 +52,12 @@ typedef struct gltf_scene {
     int           nnodes;
     br_actor     *root_actor;   /* root of the actor tree */
     float        *rest_trs;     /* nnodes * 10: [tx ty tz qx qy qz qw sx sy sz] */
-    gltf_animation anim;
+    gltf_animation *anims;
+    int           nanims;
+    br_pixelmap  *ground_tex;   /* extracted ground texture (if auto-ground) */
+    br_pixelmap  *sky_tex;      /* extracted sky texture (if auto-ground) */
+    float         ground_y;     /* Y position of the ground plane */
+    float         sky_y;        /* Y position of the sky plane */
 } gltf_scene;
 
 /*
@@ -68,9 +75,10 @@ int  gltf_load_scene(const char *filename, gltf_scene *out);
 void gltf_free_scene(gltf_scene *scene);
 
 /*
- * Evaluate animation at the given time (seconds) and update
- * actor transforms. Loops automatically at animation duration.
- * No-op if the scene has no animation.
+ * Evaluate all animations at the given time (seconds) and update
+ * actor transforms. Each animation handles looping independently
+ * based on its loop flag (loop=wrap time, oneshot=clamp at end).
+ * No-op if the scene has no animations.
  */
 void gltf_update_animation(gltf_scene *scene, float time);
 

@@ -830,3 +830,423 @@ void BR_ASM_CALL TriangleRenderTexturedSmooth_RGB_888_ZB(brp_block *block, brp_v
 	}
 #undef TEXLIT_STEP_MAIN
 }
+
+/* ===================================================================
+ * Perspective-correct textured triangle renderers
+ *
+ * Uses span-based correction: every PERSP_SPAN pixels, compute true
+ * u,v via float division, then affinely interpolate within the span.
+ * Reads comp_f[C_W] (clip-space W, left as float by the convert step).
+ * =================================================================== */
+
+#define PERSP_SPAN 16
+
+/*
+ * Perspective-correct scanline: textured, no lighting, RGB_888 + Z16
+ */
+static void scanline_persp_textured_zb(int y, int x_start, int x_end,
+                                        br_int_32 z_start, br_int_32 dz,
+                                        float uw0, float vw0, float qw0,
+                                        float uw_dx, float vw_dx, float qw_dx,
+                                        char *colour_base, br_int_32 colour_stride,
+                                        char *depth_base, br_int_32 depth_stride,
+                                        char *tex_base, br_int_32 tex_stride,
+                                        int tex_width, int tex_height)
+{
+	unsigned char *cline = (unsigned char *)(colour_base + y * colour_stride);
+	unsigned short *zline = (unsigned short *)(depth_base + y * depth_stride);
+	br_int_32 z = z_start;
+	int x = x_start;
+
+	while (x < x_end) {
+		int span_end = x + PERSP_SPAN;
+		int span_len, sx;
+		float inv_q0, u0, v0, inv_q1, u1, v1, du, dv, fu, fv;
+
+		if (span_end > x_end) span_end = x_end;
+		span_len = span_end - x;
+
+		inv_q0 = 1.0f / qw0;
+		u0 = uw0 * inv_q0;
+		v0 = vw0 * inv_q0;
+
+		{
+			float uw1 = uw0 + uw_dx * span_len;
+			float vw1 = vw0 + vw_dx * span_len;
+			float qw1 = qw0 + qw_dx * span_len;
+			inv_q1 = 1.0f / qw1;
+			u1 = uw1 * inv_q1;
+			v1 = vw1 * inv_q1;
+		}
+
+		du = (u1 - u0) / (float)span_len;
+		dv = (v1 - v0) / (float)span_len;
+		fu = u0;
+		fv = v0;
+
+		for (sx = x; sx < span_end; sx++) {
+			unsigned short zval = (unsigned short)(z >> 16);
+			if (zline[sx] >= zval) {
+				int tu = (int)fu % tex_width;
+				int tv = (int)fv % tex_height;
+				unsigned char *texel;
+				if (tu < 0) tu += tex_width;
+				if (tv < 0) tv += tex_height;
+				texel = (unsigned char *)(tex_base + tv * tex_stride + tu * 3);
+				if (texel[0] | texel[1] | texel[2]) {
+					zline[sx] = zval;
+					cline[sx * 3 + 0] = texel[0];
+					cline[sx * 3 + 1] = texel[1];
+					cline[sx * 3 + 2] = texel[2];
+				}
+			}
+			z += dz;
+			fu += du;
+			fv += dv;
+		}
+
+		uw0 += uw_dx * span_len;
+		vw0 += vw_dx * span_len;
+		qw0 += qw_dx * span_len;
+		x = span_end;
+	}
+}
+
+/*
+ * Perspective-correct scanline: textured + Gouraud, RGB_888 + Z16
+ */
+static void scanline_persp_textured_smooth_zb(int y, int x_start, int x_end,
+                                               br_int_32 z_start, br_int_32 dz,
+                                               float uw0, float vw0, float qw0,
+                                               float uw_dx, float vw_dx, float qw_dx,
+                                               br_int_32 r_start, br_int_32 dr,
+                                               br_int_32 g_start, br_int_32 dg,
+                                               br_int_32 b_start, br_int_32 db,
+                                               char *colour_base, br_int_32 colour_stride,
+                                               char *depth_base, br_int_32 depth_stride,
+                                               char *tex_base, br_int_32 tex_stride,
+                                               int tex_width, int tex_height)
+{
+	unsigned char *cline = (unsigned char *)(colour_base + y * colour_stride);
+	unsigned short *zline = (unsigned short *)(depth_base + y * depth_stride);
+	br_int_32 z = z_start;
+	br_int_32 r = r_start, g = g_start, b = b_start;
+	int x = x_start;
+
+	while (x < x_end) {
+		int span_end = x + PERSP_SPAN;
+		int span_len, sx;
+		float inv_q0, u0, v0, inv_q1, u1, v1, du, dv, fu, fv;
+
+		if (span_end > x_end) span_end = x_end;
+		span_len = span_end - x;
+
+		inv_q0 = 1.0f / qw0;
+		u0 = uw0 * inv_q0;
+		v0 = vw0 * inv_q0;
+
+		{
+			float uw1 = uw0 + uw_dx * span_len;
+			float vw1 = vw0 + vw_dx * span_len;
+			float qw1 = qw0 + qw_dx * span_len;
+			inv_q1 = 1.0f / qw1;
+			u1 = uw1 * inv_q1;
+			v1 = vw1 * inv_q1;
+		}
+
+		du = (u1 - u0) / (float)span_len;
+		dv = (v1 - v0) / (float)span_len;
+		fu = u0;
+		fv = v0;
+
+		for (sx = x; sx < span_end; sx++) {
+			unsigned short zval = (unsigned short)(z >> 16);
+			if (zline[sx] >= zval) {
+				int tu = (int)fu % tex_width;
+				int tv = (int)fv % tex_height;
+				unsigned char *texel;
+				if (tu < 0) tu += tex_width;
+				if (tv < 0) tv += tex_height;
+				texel = (unsigned char *)(tex_base + tv * tex_stride + tu * 3);
+				if (texel[0] | texel[1] | texel[2]) {
+					int vr = (r >> 16) & 0xFF, vg = (g >> 16) & 0xFF, vb = (b >> 16) & 0xFF;
+					zline[sx] = zval;
+					cline[sx * 3 + 0] = (unsigned char)((texel[0] * vb) >> 8);
+					cline[sx * 3 + 1] = (unsigned char)((texel[1] * vg) >> 8);
+					cline[sx * 3 + 2] = (unsigned char)((texel[2] * vr) >> 8);
+				}
+			}
+			z += dz;
+			r += dr; g += dg; b += db;
+			fu += du;
+			fv += dv;
+		}
+
+		uw0 += uw_dx * span_len;
+		vw0 += vw_dx * span_len;
+		qw0 += qw_dx * span_len;
+		x = span_end;
+	}
+}
+
+/*
+ * Common perspective UV+Q gradient setup.
+ * Reads comp_f[C_W] (float, NOT converted to fixed) and comp_x[C_U/C_V]
+ * (16.16 fixed, already converted). Computes screen-space gradients for
+ * u/w, v/w, and 1/w in float.
+ */
+typedef struct {
+	float uw_current, vw_current, qw_current;
+	float uw_grad_x, vw_grad_x, qw_grad_x;
+	float uw_d_nocarry, vw_d_nocarry, qw_d_nocarry;
+	float uw_d_carry, vw_d_carry, qw_d_carry;
+} persp_params_t;
+
+static void persp_setup(persp_params_t *p,
+                        const brp_vertex *a, const brp_vertex *b, const brp_vertex *c,
+                        br_int_32 g_divisor)
+{
+	float a_w = a->comp_f[C_W], b_w = b->comp_f[C_W], c_w = c->comp_f[C_W];
+	float a_q = 1.0f / a_w, b_q = 1.0f / b_w, c_q = 1.0f / c_w;
+	float a_u = a->comp_x[C_U] / 65536.0f, b_u = b->comp_x[C_U] / 65536.0f, c_u = c->comp_x[C_U] / 65536.0f;
+	float a_v = a->comp_x[C_V] / 65536.0f, b_v = b->comp_x[C_V] / 65536.0f, c_v = c->comp_x[C_V] / 65536.0f;
+	float a_uw = a_u * a_q, b_uw = b_u * b_q, c_uw = c_u * c_q;
+	float a_vw = a_v * a_q, b_vw = b_v * b_q, c_vw = c_v * c_q;
+	float g_inv = 1.0f / (float)g_divisor;
+	float d1, d2, uw_grad_y, vw_grad_y, qw_grad_y;
+	int grad_i;
+
+	d1 = b_uw - a_uw; d2 = c_uw - a_uw;
+	p->uw_grad_x = (d1 * work.main.y - d2 * work.top.y) * g_inv;
+	uw_grad_y    = (d2 * work.top.x - d1 * work.main.x) * g_inv;
+
+	d1 = b_vw - a_vw; d2 = c_vw - a_vw;
+	p->vw_grad_x = (d1 * work.main.y - d2 * work.top.y) * g_inv;
+	vw_grad_y    = (d2 * work.top.x - d1 * work.main.x) * g_inv;
+
+	d1 = b_q - a_q; d2 = c_q - a_q;
+	p->qw_grad_x = (d1 * work.main.y - d2 * work.top.y) * g_inv;
+	qw_grad_y    = (d2 * work.top.x - d1 * work.main.x) * g_inv;
+
+	p->uw_current = a_uw + p->uw_grad_x * 0.5f;
+	p->vw_current = a_vw + p->vw_grad_x * 0.5f;
+	p->qw_current = a_q  + p->qw_grad_x * 0.5f;
+
+	grad_i = BrFixedToInt(work.main.grad);
+	p->uw_d_nocarry = grad_i * p->uw_grad_x + uw_grad_y;
+	p->vw_d_nocarry = grad_i * p->vw_grad_x + vw_grad_y;
+	p->qw_d_nocarry = grad_i * p->qw_grad_x + qw_grad_y;
+	p->uw_d_carry = p->uw_d_nocarry + p->uw_grad_x;
+	p->vw_d_carry = p->vw_d_nocarry + p->vw_grad_x;
+	p->qw_d_carry = p->qw_d_nocarry + p->qw_grad_x;
+}
+
+/*
+ * Perspective-correct textured triangle: RGB_888 + Z16 (no per-vertex lighting)
+ */
+void BR_ASM_CALL TriangleRenderPerspTextured_RGB_888_ZB(brp_block *block, brp_vertex *v0, brp_vertex *v1, brp_vertex *v2)
+{
+	brp_vertex *a, *b, *c;
+	br_int_32 g_divisor;
+	char *colour_base, *depth_base, *tex_base;
+	br_int_32 colour_stride, depth_stride, tex_stride;
+	int tex_width, tex_height, y, scanline, main_x_i, main_x_f, x_left, x_right;
+	br_int_32 z_current;
+	persp_params_t pp;
+
+	(void)block;
+	if (triangle_setup(v0, v1, v2, &a, &b, &c, &g_divisor)) return;
+
+	PARAM_SETUP_UNSIGNED(work.pz, comp_x[C_SZ]);
+	persp_setup(&pp, a, b, c, g_divisor);
+
+	colour_base = (char *)work.colour.base; depth_base = (char *)work.depth.base;
+	colour_stride = work.colour.stride_b;   depth_stride = work.depth.stride_b;
+	tex_base = (char *)work.texture.base;    tex_stride = work.texture.stride_b;
+	tex_width = (int)work.texture.width_p;   tex_height = (int)work.texture.height;
+	if (tex_width <= 0 || tex_height <= 0) return;
+
+	main_x_i = a->comp_x[C_SX] >> 16; main_x_f = 0x80000000;
+	z_current = work.pz.current;
+
+#define PERSP_STEP_MAIN() \
+	{ br_uint_32 nf = (br_uint_32)main_x_f + (br_uint_32)work.main.d_f; \
+	  if (nf < (br_uint_32)main_x_f) { \
+		main_x_i += work.main.d_i + 1; \
+		z_current += work.pz.d_carry; \
+		pp.uw_current += pp.uw_d_carry; pp.vw_current += pp.vw_d_carry; pp.qw_current += pp.qw_d_carry; \
+	  } else { \
+		main_x_i += work.main.d_i; \
+		z_current += work.pz.d_nocarry; \
+		pp.uw_current += pp.uw_d_nocarry; pp.vw_current += pp.vw_d_nocarry; pp.qw_current += pp.qw_d_nocarry; \
+	  } main_x_f = nf; }
+
+	/* Top half */
+	{
+		int minor_x_i = a->comp_x[C_SX] >> 16, minor_x_f = 0x80000000;
+		for (scanline = 0; scanline < work.top.count; scanline++) {
+			y = (a->comp_x[C_SY] >> 16) + scanline;
+			if (y >= 0 && y < (int)work.colour.height) {
+				int dx;
+				x_left  = (g_divisor >= 0) ? main_x_i  : minor_x_i;
+				x_right = (g_divisor >= 0) ? minor_x_i : main_x_i;
+				if (x_left < 0) x_left = 0;
+				if (x_right > (int)work.colour.width_p) x_right = (int)work.colour.width_p;
+				dx = x_left - main_x_i;
+				if (x_left < x_right)
+					scanline_persp_textured_zb(y, x_left, x_right,
+						z_current + work.pz.grad_x * dx, work.pz.grad_x,
+						pp.uw_current + pp.uw_grad_x * dx,
+						pp.vw_current + pp.vw_grad_x * dx,
+						pp.qw_current + pp.qw_grad_x * dx,
+						pp.uw_grad_x, pp.vw_grad_x, pp.qw_grad_x,
+						colour_base, colour_stride, depth_base, depth_stride,
+						tex_base, tex_stride, tex_width, tex_height);
+			}
+			PERSP_STEP_MAIN()
+			{ br_uint_32 nf = (br_uint_32)minor_x_f + (br_uint_32)work.top.d_f;
+			  minor_x_i += (nf < (br_uint_32)minor_x_f) ? work.top.d_i + 1 : work.top.d_i;
+			  minor_x_f = nf; }
+		}
+	}
+	/* Bottom half */
+	{
+		int minor_x_i = b->comp_x[C_SX] >> 16, minor_x_f = 0x80000000;
+		for (scanline = 0; scanline < work.bot.count; scanline++) {
+			y = (b->comp_x[C_SY] >> 16) + scanline;
+			if (y >= 0 && y < (int)work.colour.height) {
+				int dx;
+				x_left  = (g_divisor >= 0) ? main_x_i  : minor_x_i;
+				x_right = (g_divisor >= 0) ? minor_x_i : main_x_i;
+				if (x_left < 0) x_left = 0;
+				if (x_right > (int)work.colour.width_p) x_right = (int)work.colour.width_p;
+				dx = x_left - main_x_i;
+				if (x_left < x_right)
+					scanline_persp_textured_zb(y, x_left, x_right,
+						z_current + work.pz.grad_x * dx, work.pz.grad_x,
+						pp.uw_current + pp.uw_grad_x * dx,
+						pp.vw_current + pp.vw_grad_x * dx,
+						pp.qw_current + pp.qw_grad_x * dx,
+						pp.uw_grad_x, pp.vw_grad_x, pp.qw_grad_x,
+						colour_base, colour_stride, depth_base, depth_stride,
+						tex_base, tex_stride, tex_width, tex_height);
+			}
+			PERSP_STEP_MAIN()
+			{ br_uint_32 nf = (br_uint_32)minor_x_f + (br_uint_32)work.bot.d_f;
+			  minor_x_i += (nf < (br_uint_32)minor_x_f) ? work.bot.d_i + 1 : work.bot.d_i;
+			  minor_x_f = nf; }
+		}
+	}
+#undef PERSP_STEP_MAIN
+}
+
+/*
+ * Perspective-correct textured + Gouraud-lit triangle: RGB_888 + Z16
+ */
+void BR_ASM_CALL TriangleRenderPerspTexturedSmooth_RGB_888_ZB(brp_block *block, brp_vertex *v0, brp_vertex *v1, brp_vertex *v2)
+{
+	brp_vertex *a, *b, *c;
+	br_int_32 g_divisor;
+	char *colour_base, *depth_base, *tex_base;
+	br_int_32 colour_stride, depth_stride, tex_stride;
+	int tex_width, tex_height, y, scanline, main_x_i, main_x_f, x_left, x_right;
+	br_int_32 z_current, r_current, g_current, b_current;
+	persp_params_t pp;
+
+	(void)block;
+	if (triangle_setup(v0, v1, v2, &a, &b, &c, &g_divisor)) return;
+
+	PARAM_SETUP_UNSIGNED(work.pz, comp_x[C_SZ]);
+	PARAM_SETUP(work.pr, comp_x[C_R]);
+	PARAM_SETUP(work.pg, comp_x[C_G]);
+	PARAM_SETUP(work.pb, comp_x[C_B]);
+	persp_setup(&pp, a, b, c, g_divisor);
+
+	colour_base = (char *)work.colour.base; depth_base = (char *)work.depth.base;
+	colour_stride = work.colour.stride_b;   depth_stride = work.depth.stride_b;
+	tex_base = (char *)work.texture.base;    tex_stride = work.texture.stride_b;
+	tex_width = (int)work.texture.width_p;   tex_height = (int)work.texture.height;
+	if (tex_width <= 0 || tex_height <= 0) return;
+
+	main_x_i = a->comp_x[C_SX] >> 16; main_x_f = 0x80000000;
+	z_current = work.pz.current;
+	r_current = work.pr.current; g_current = work.pg.current; b_current = work.pb.current;
+
+#define PERSP_LIT_STEP_MAIN() \
+	{ br_uint_32 nf = (br_uint_32)main_x_f + (br_uint_32)work.main.d_f; \
+	  if (nf < (br_uint_32)main_x_f) { \
+		main_x_i += work.main.d_i + 1; \
+		z_current += work.pz.d_carry; \
+		r_current += work.pr.d_carry; g_current += work.pg.d_carry; b_current += work.pb.d_carry; \
+		pp.uw_current += pp.uw_d_carry; pp.vw_current += pp.vw_d_carry; pp.qw_current += pp.qw_d_carry; \
+	  } else { \
+		main_x_i += work.main.d_i; \
+		z_current += work.pz.d_nocarry; \
+		r_current += work.pr.d_nocarry; g_current += work.pg.d_nocarry; b_current += work.pb.d_nocarry; \
+		pp.uw_current += pp.uw_d_nocarry; pp.vw_current += pp.vw_d_nocarry; pp.qw_current += pp.qw_d_nocarry; \
+	  } main_x_f = nf; }
+
+	/* Top half */
+	{
+		int minor_x_i = a->comp_x[C_SX] >> 16, minor_x_f = 0x80000000;
+		for (scanline = 0; scanline < work.top.count; scanline++) {
+			y = (a->comp_x[C_SY] >> 16) + scanline;
+			if (y >= 0 && y < (int)work.colour.height) {
+				int dx;
+				x_left  = (g_divisor >= 0) ? main_x_i  : minor_x_i;
+				x_right = (g_divisor >= 0) ? minor_x_i : main_x_i;
+				if (x_left < 0) x_left = 0;
+				if (x_right > (int)work.colour.width_p) x_right = (int)work.colour.width_p;
+				dx = x_left - main_x_i;
+				if (x_left < x_right)
+					scanline_persp_textured_smooth_zb(y, x_left, x_right,
+						z_current + work.pz.grad_x * dx, work.pz.grad_x,
+						pp.uw_current + pp.uw_grad_x * dx,
+						pp.vw_current + pp.vw_grad_x * dx,
+						pp.qw_current + pp.qw_grad_x * dx,
+						pp.uw_grad_x, pp.vw_grad_x, pp.qw_grad_x,
+						r_current + work.pr.grad_x * dx, work.pr.grad_x,
+						g_current + work.pg.grad_x * dx, work.pg.grad_x,
+						b_current + work.pb.grad_x * dx, work.pb.grad_x,
+						colour_base, colour_stride, depth_base, depth_stride,
+						tex_base, tex_stride, tex_width, tex_height);
+			}
+			PERSP_LIT_STEP_MAIN()
+			{ br_uint_32 nf = (br_uint_32)minor_x_f + (br_uint_32)work.top.d_f;
+			  minor_x_i += (nf < (br_uint_32)minor_x_f) ? work.top.d_i + 1 : work.top.d_i;
+			  minor_x_f = nf; }
+		}
+	}
+	/* Bottom half */
+	{
+		int minor_x_i = b->comp_x[C_SX] >> 16, minor_x_f = 0x80000000;
+		for (scanline = 0; scanline < work.bot.count; scanline++) {
+			y = (b->comp_x[C_SY] >> 16) + scanline;
+			if (y >= 0 && y < (int)work.colour.height) {
+				int dx;
+				x_left  = (g_divisor >= 0) ? main_x_i  : minor_x_i;
+				x_right = (g_divisor >= 0) ? minor_x_i : main_x_i;
+				if (x_left < 0) x_left = 0;
+				if (x_right > (int)work.colour.width_p) x_right = (int)work.colour.width_p;
+				dx = x_left - main_x_i;
+				if (x_left < x_right)
+					scanline_persp_textured_smooth_zb(y, x_left, x_right,
+						z_current + work.pz.grad_x * dx, work.pz.grad_x,
+						pp.uw_current + pp.uw_grad_x * dx,
+						pp.vw_current + pp.vw_grad_x * dx,
+						pp.qw_current + pp.qw_grad_x * dx,
+						pp.uw_grad_x, pp.vw_grad_x, pp.qw_grad_x,
+						r_current + work.pr.grad_x * dx, work.pr.grad_x,
+						g_current + work.pg.grad_x * dx, work.pg.grad_x,
+						b_current + work.pb.grad_x * dx, work.pb.grad_x,
+						colour_base, colour_stride, depth_base, depth_stride,
+						tex_base, tex_stride, tex_width, tex_height);
+			}
+			PERSP_LIT_STEP_MAIN()
+			{ br_uint_32 nf = (br_uint_32)minor_x_f + (br_uint_32)work.bot.d_f;
+			  minor_x_i += (nf < (br_uint_32)minor_x_f) ? work.bot.d_i + 1 : work.bot.d_i;
+			  minor_x_f = nf; }
+		}
+	}
+#undef PERSP_LIT_STEP_MAIN
+}

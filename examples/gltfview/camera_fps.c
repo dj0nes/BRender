@@ -36,7 +36,7 @@ void fps_camera_init_look_at(fps_camera_t *cam,
 
     cam->yaw         = (float)atan2((double)dx, (double)dz);
     cam->pitch        = (float)asin((double)dy);
-    cam->base_speed   = scene_radius * 0.5f;
+    cam->base_speed   = scene_radius * 0.05f;
     cam->sensitivity  = 0.003f;
 }
 
@@ -73,9 +73,9 @@ void fps_camera_update(fps_camera_t *cam, float dt, const fps_input_t *in)
     fwd_y = (float)sin((double)cam->pitch);
     fwd_z = cp * cy;
 
-    /* Right vector (horizontal only): up x forward, normalized */
-    right_x =  cy;
-    right_z = -sy;
+    /* Right vector (horizontal only): forward x up */
+    right_x = -cy;
+    right_z =  sy;
 
     if (in->fwd) {
         cam->pos_x += fwd_x * speed;
