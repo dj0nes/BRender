@@ -11,6 +11,7 @@
 typedef struct br_gltf_load_state {
     cgltf_data     *data;
     br_fmt_results *results;
+    const char     *base_path; /**< Directory for resolving relative URIs (with trailing slash). */
 
     br_actor **all_actors; /**< All actors in the same order as the file. */
 } br_gltf_load_state;
@@ -91,27 +92,55 @@ void *unbuild_data_url(void *res, const char *uri, size_t *size)
     return data_out;
 }
 
-static br_pixelmap *load_pixelmap(void *res, const cgltf_image *image)
+static br_pixelmap *load_pixelmap(br_gltf_load_state *state, const cgltf_image *image)
 {
     void        *raw_data, *pixels;
     br_pixelmap *pixelmap, *tmp;
     size_t       size;
     int          x, y, c;
+    int          owns_raw = 0;
 
-    if((raw_data = unbuild_data_url(res, image->uri, &size)) == NULL)
+    /*
+     * GLB: images stored in buffer views.
+     */
+    if(image->buffer_view != NULL) {
+        raw_data = (void *)cgltf_buffer_view_data(image->buffer_view);
+        size     = image->buffer_view->size;
+    } else if(image->uri != NULL) {
+        /*
+         * Try base64 data URI first, then external file.
+         */
+        if((raw_data = unbuild_data_url(state, image->uri, &size)) != NULL) {
+            owns_raw = 1;
+        } else {
+            char               *path  = BrResSprintf(state, "%s%s", state->base_path, image->uri);
+            cgltf_size          fsize;
+
+            raw_data = BrFileLoad(state, path, &fsize);
+            BrResFree(path);
+            if(raw_data == NULL)
+                return NULL;
+            size     = (size_t)fsize;
+            owns_raw = 1;
+        }
+    } else {
         return NULL;
+    }
 
     if(size > INT_MAX) {
-        BrResFree(raw_data);
+        if(owns_raw)
+            BrResFree(raw_data);
         return NULL;
     }
 
     if((pixels = stbi_load_from_memory(raw_data, (int)size, &x, &y, &c, 4)) == NULL) {
-        BrResFree(raw_data);
+        if(owns_raw)
+            BrResFree(raw_data);
         return NULL;
     }
 
-    BrResFree(raw_data);
+    if(owns_raw)
+        BrResFree(raw_data);
 
     tmp             = BrPixelmapAllocate(BR_PMT_RGBA_8888_ARR, x, y, pixels, BR_PMAF_NORMAL);
     tmp->identifier = (char *)image->name; /* NB: This is safe, the clone below will copy it. */
@@ -392,6 +421,17 @@ static br_model *create_model(const cgltf_mesh *mesh, br_gltf_load_state *state)
         vertex_base += info->output_vertex_count;
     }
 
+    /*
+     * If any primitive had normals, tell BRender to use them
+     * instead of regenerating from smoothing groups.
+     */
+    for(br_size_t i = 0; i < mesh->primitives_count; ++i) {
+        if(primitive_info[i].attrib_normal != NULL) {
+            model->flags |= BR_MODF_CUSTOM_NORMALS;
+            break;
+        }
+    }
+
     return model;
 }
 
@@ -407,6 +447,11 @@ static void fill_material(br_material *mat, const cgltf_material *material, cons
     }
 
     mat->flags |= BR_MATF_LIGHT;
+    mat->mode &= ~BR_MATM_SHADING_MODE_MASK;
+    mat->mode |= BR_MATM_SHADING_MODE_PHONG;
+
+    if(material->double_sided)
+        mat->flags |= BR_MATF_TWO_SIDED;
 
     if(material->has_pbr_metallic_roughness) {
         const cgltf_pbr_metallic_roughness *pbr = &material->pbr_metallic_roughness;
@@ -784,6 +829,7 @@ br_fmt_results *BR_PUBLIC_ENTRY BrFmtGLTFActorLoadMany(const char *name, const c
         base_path = ".";
     }
     base_path = BrResSprintf(state, "%s/", base_path);
+    state->base_path = base_path;
 
     opts.memory.user_data = state;
 
