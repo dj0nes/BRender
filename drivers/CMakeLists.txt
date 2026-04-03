@@ -30,6 +30,11 @@ if (BRENDER_BUILD_SOFT)
     target_link_libraries(brender-full INTERFACE pentprim)
 endif ()
 
+if (BRENDER_BUILD_VFX)
+    add_subdirectory(vfxprim)
+    target_link_libraries(brender-full INTERFACE vfxprim)
+endif ()
+
 if (CMAKE_SYSTEM_NAME STREQUAL "DOS")
     add_subdirectory(mcga)
     target_link_libraries(brender-full INTERFACE mcga)
