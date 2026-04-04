@@ -1,0 +1,52 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "default",
+      "displayName": "Ninja (RelWithDebInfo)",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "BRENDER_BUILD_DRIVERS": "ON",
+        "BRENDER_BUILD_TOOLS": "ON",
+        "BRENDER_BUILD_EXAMPLES": "ON"
+      }
+    },
+    {
+      "name": "debug",
+      "displayName": "Ninja (Debug)",
+      "inherits": "default",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "msvc",
+      "displayName": "Visual Studio (RelWithDebInfo)",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "BRENDER_BUILD_DRIVERS": "ON",
+        "BRENDER_BUILD_TOOLS": "ON",
+        "BRENDER_BUILD_EXAMPLES": "ON"
+      }
+    },
+    {
+      "name": "msvc-debug",
+      "displayName": "Visual Studio (Debug)",
+      "inherits": "msvc",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "default",    "configurePreset": "default" },
+    { "name": "debug",      "configurePreset": "debug" },
+    { "name": "msvc",       "configurePreset": "msvc" },
+    { "name": "msvc-debug", "configurePreset": "msvc-debug" }
+  ]
+}
