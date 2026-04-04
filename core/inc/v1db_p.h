@@ -402,6 +402,11 @@ typedef br_boolean BR_CALLBACK br_primlib_enum_cbfn(const char *identifier, br_p
 br_error BR_PUBLIC_ENTRY BrRendererFacilityEnum(br_pixelmap *destination, br_rendfcty_enum_cbfn *cbfn, void *args);
 br_error BR_PUBLIC_ENTRY BrPrimitiveLibraryEnum(br_pixelmap *destination, br_primlib_enum_cbfn *cbfn, void *args);
 
+/*
+ * Animation
+ */
+void BR_PUBLIC_ENTRY BrAnimationSetUpdate(br_animation_set *set, float time);
+
 #ifdef __cplusplus
 };
 #endif

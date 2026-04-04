@@ -98,6 +98,11 @@ br_error BR_PUBLIC_ENTRY BrFmtGLTFModelSave(const char *name, br_model *model);
 
 br_fmt_results *BR_PUBLIC_ENTRY BrFmtGLTFActorLoadMany(const char *name, const br_gltf_options *options);
 
+/*
+ * .GLTF animation
+ */
+br_animation_set *BR_PUBLIC_ENTRY BrFmtGLTFAnimLoad(const char *name, br_actor **actors, br_uint_32 nactors);
+
 #ifdef __cplusplus
 };
 #endif

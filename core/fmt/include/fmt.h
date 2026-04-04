@@ -164,6 +164,11 @@ typedef struct br_vue {
 } br_vue;
 
 /*
+ * glTF animation — uses core br_animation_set / br_animation_clip types
+ * (defined in brender.h / animation.h, not visible to H2INC/MASM)
+ */
+
+/*
  * Image type enumerations
  */
 enum {
