@@ -106,3 +106,11 @@ jobs:
 
       - name: Build
         run: cmake --build build --parallel
+
+      - name: Upload drv.inc for debugging
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drv-inc-${{ matrix.configuration.platform }}-${{ matrix.configuration.soft }}
+          path: build/drivers/pentprim/drv.inc
+          if-no-files-found: ignore
